@@ -20,9 +20,21 @@
 # production
 /build
 
+# Tauri / Rust
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/models/*.bin
+
 # misc
 .DS_Store
 *.pem
+Thumbs.db
+
+# IDE / Agent
+.agent/
+.agents/
+.claude/
+.cursor/
 
 # debug
 npm-debug.log*
@@ -39,3 +51,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# external / reference projects
+/screenpipe-assistant/
+
+# temp / debug
+UsersUserSitesprmptrtemp_assets.json
+nul
+imgur-error.png

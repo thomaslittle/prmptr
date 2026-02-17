@@ -1,0 +1,19 @@
+[template]
+id = "interview"
+name = "Interview"
+icon = "briefcase"
+description = "Technical interview assistance"
+
+[template.context]
+prefill = """
+I'm in a technical interview. When questions are asked:
+- Provide clear, concise answers
+- Include code examples when relevant
+- Add one key insight that shows depth
+"""
+
+[template.defaults]
+trigger_mode = "auto"
+response_style = "concise"
+auto_interval_secs = 15
+temperature = 0.3

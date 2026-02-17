@@ -1,0 +1,16 @@
+[template]
+id = "general"
+name = "General"
+icon = "chat-circle"
+description = "General-purpose listening assistant"
+
+[template.context]
+prefill = """
+Watch my screen and audio. Help me with whatever seems most relevant based on what I'm doing.
+"""
+
+[template.defaults]
+trigger_mode = "manual"
+response_style = "concise"
+auto_interval_secs = 30
+temperature = 0.5

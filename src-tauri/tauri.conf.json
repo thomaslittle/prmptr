@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/packages/api/schema/tauri-config.schema.json",
+  "productName": "PRMPTR",
+  "identifier": "com.prmptr.app",
+  "version": "0.1.0",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../.next"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "PRMPTR",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 700,
+        "minHeight": 500,
+        "resizable": true,
+        "fullscreen": false
+      },
+      {
+        "label": "overlay",
+        "title": "PRMPTR Overlay",
+        "url": "/overlay",
+        "width": 400,
+        "height": 500,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false,
+      "tooltip": "PRMPTR"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "models/ggml-tiny.en.bin": "models/ggml-tiny.en.bin",
+      "models/silero_vad.onnx": "models/silero_vad.onnx",
+      "models/nemo_en_speakerverification_speakernet.onnx": "models/nemo_en_speakerverification_speakernet.onnx"
+    }
+  },
+  "plugins": {}
+}

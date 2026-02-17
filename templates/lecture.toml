@@ -1,0 +1,20 @@
+[template]
+id = "lecture"
+name = "Lecture"
+icon = "book-open"
+description = "Lecture and educational content notes"
+
+[template.context]
+prefill = """
+I'm attending a lecture or educational content. Help me:
+- Explain concepts in simpler terms
+- Connect new ideas to fundamentals
+- Flag important terms and definitions
+- Create study notes from what's discussed
+"""
+
+[template.defaults]
+trigger_mode = "auto"
+response_style = "detailed"
+auto_interval_secs = 30
+temperature = 0.3

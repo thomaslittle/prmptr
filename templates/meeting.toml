@@ -1,0 +1,19 @@
+[template]
+id = "meeting"
+name = "Meeting"
+icon = "clipboard"
+description = "Meeting notes and talking points"
+
+[template.context]
+prefill = """
+I'm in a meeting. Help me participate effectively:
+- Summarize key discussion points
+- Suggest talking points
+- Flag action items and decisions
+"""
+
+[template.defaults]
+trigger_mode = "auto"
+response_style = "concise"
+auto_interval_secs = 30
+temperature = 0.3

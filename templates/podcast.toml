@@ -1,0 +1,19 @@
+[template]
+id = "podcast"
+name = "Podcast"
+icon = "headphones"
+description = "Podcast and video listening companion"
+
+[template.context]
+prefill = """
+I'm listening to a podcast or watching a video. Help me:
+- Note key insights and arguments
+- Fact-check claims when possible
+- Summarize segments as they play
+"""
+
+[template.defaults]
+trigger_mode = "auto"
+response_style = "detailed"
+auto_interval_secs = 45
+temperature = 0.3

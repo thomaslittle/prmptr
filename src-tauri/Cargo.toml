@@ -1,0 +1,42 @@
+[package]
+name = "prmptr"
+version = "0.1.0"
+description = "Real-time AI audio assistant powered by Screenpipe"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "prmptr_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-store = "2"
+tauri-plugin-mcp-bridge = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+reqwest = { version = "0.12", features = ["stream", "json", "native-tls"] }
+futures-util = "0.3"
+log = "0.4"
+env_logger = "0.11"
+async-trait = "0.1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+zip = "2"
+flate2 = "1"
+tar = "0.4"
+cpal = "0.15"
+whisper-rs = "0.15.1"
+whisper-rs-sys = "0.14.1"
+sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries", "tts"] }
+libc = "0.2"
+open = "5"
+base64 = "0.22"

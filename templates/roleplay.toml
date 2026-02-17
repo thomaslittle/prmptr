@@ -1,0 +1,19 @@
+[template]
+id = "roleplay"
+name = "Roleplay"
+icon = "game-controller"
+description = "In-game dialogue and RP assistance"
+
+[template.context]
+prefill = """
+I'm playing a roleplaying game. Help me with in-game dialogue:
+- Suggest dialogue options that fit the context
+- Stay in character based on what you hear
+- Keep suggestions brief and natural-sounding
+"""
+
+[template.defaults]
+trigger_mode = "auto"
+response_style = "concise"
+auto_interval_secs = 10
+temperature = 0.6

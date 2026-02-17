@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/packages/api/schema/capability-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for PRMPTR",
+  "windows": [
+    "main",
+    "overlay"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-start-dragging",
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "store:default",
+    "mcp-bridge:default"
+  ]
+}
