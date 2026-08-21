@@ -26,6 +26,12 @@ export async function stopScreenpipe(): Promise<void> {
     return invoke("stop_screenpipe");
 }
 
+export async function updateScreenpipeConfig(config: Record<string, unknown>): Promise<void> {
+    if (!isTauri()) throw new Error("Screenpipe management requires Tauri");
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("update_screenpipe_config", { config });
+}
+
 export async function getScreenpipeStatus(): Promise<{
     running: boolean;
     healthy: boolean;
@@ -142,9 +148,11 @@ export async function validateApiKey(
     }
     const base = provider === "groq"
         ? "https://api.groq.com/openai/v1"
-        : "https://api.openai.com/v1";
+        : provider === "cerebras"
+            ? "https://api.cerebras.ai/v1"
+            : "https://api.openai.com/v1";
     const resp = await fetch(`${base}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
     });
     return resp.ok;
 }
@@ -340,7 +348,9 @@ export async function stopLocalTranscription(): Promise<void> {
 export async function startDirectDeepgramTranscription(
     apiKey: string,
     inputDeviceName?: string,
-    outputDeviceName?: string
+    outputDeviceName?: string,
+    muteInput?: boolean,
+    muteOutput?: boolean
 ): Promise<void> {
     if (!isTauri()) throw new Error("Direct Deepgram transcription requires Tauri");
     const { invoke } = await import("@tauri-apps/api/core");
@@ -348,9 +358,36 @@ export async function startDirectDeepgramTranscription(
         api_key: apiKey,
         input_device_name: inputDeviceName ?? null,
         output_device_name: outputDeviceName ?? null,
+        mute_input: muteInput ?? false,
+        mute_output: muteOutput ?? false,
         apiKey,
         inputDeviceName: inputDeviceName ?? null,
         outputDeviceName: outputDeviceName ?? null,
+        muteInput: muteInput ?? false,
+        muteOutput: muteOutput ?? false,
+    });
+}
+
+export async function updateDirectDeepgramTranscription(
+    apiKey: string,
+    inputDeviceName?: string,
+    outputDeviceName?: string,
+    muteInput?: boolean,
+    muteOutput?: boolean
+): Promise<void> {
+    if (!isTauri()) throw new Error("Direct Deepgram transcription requires Tauri");
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("update_direct_deepgram_transcription", {
+        api_key: apiKey,
+        input_device_name: inputDeviceName ?? null,
+        output_device_name: outputDeviceName ?? null,
+        mute_input: muteInput ?? false,
+        mute_output: muteOutput ?? false,
+        apiKey,
+        inputDeviceName: inputDeviceName ?? null,
+        outputDeviceName: outputDeviceName ?? null,
+        muteInput: muteInput ?? false,
+        muteOutput: muteOutput ?? false,
     });
 }
 
@@ -358,6 +395,33 @@ export async function stopDirectDeepgramTranscription(): Promise<void> {
     if (!isTauri()) return;
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("stop_direct_deepgram_transcription");
+}
+
+export async function captureNativeScreenshotViaTauri(): Promise<string | null> {
+    if (!isTauri()) return null;
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+        const payload = await invoke("plugin:mcp-bridge|capture_native_screenshot");
+        if (typeof payload === "string" && payload.trim()) {
+            const raw = payload.trim();
+            if (raw.startsWith("data:image/")) return raw;
+            return `data:image/png;base64,${raw}`;
+        }
+        if (payload && typeof payload === "object") {
+            const p = payload as Record<string, unknown>;
+            const candidates = [p.data, p.image, p.base64, p.image_base64];
+            for (const c of candidates) {
+                if (typeof c === "string" && c.trim()) {
+                    const raw = c.trim();
+                    if (raw.startsWith("data:image/")) return raw;
+                    return `data:image/png;base64,${raw}`;
+                }
+            }
+        }
+        return null;
+    } catch {
+        return null;
+    }
 }
 
 export async function onLocalTranscription(
@@ -429,4 +493,21 @@ export async function onTranscriptUpdate(
         callback(event.payload);
     });
     return unlisten;
+}
+
+/**
+ * Emitted by the Rust transcription workers when they die unexpectedly
+ * (whisper thread exit, Deepgram websocket drop). The UI must flip out of
+ * its optimistic "running" state and surface the error.
+ */
+export async function onLocalTranscriptionStatus(
+    callback: (status: { mode: "local-whisper" | "direct-deepgram"; running: boolean; error?: string }) => void
+): Promise<UnlistenFn> {
+    if (!isTauri()) return () => {};
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<{
+        mode: "local-whisper" | "direct-deepgram";
+        running: boolean;
+        error?: string;
+    }>("local-transcription-status", (event) => callback(event.payload));
 }

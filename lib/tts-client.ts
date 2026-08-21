@@ -1,5 +1,6 @@
 "use client";
 
+import { selectBestSpokenLine } from "@/lib/spoken-line";
 export const LOCAL_SHERPA_TTS_ENDPOINT = "local://sherpa-kokoro";
 
 function b64ToBlob(base64: string, mime = "audio/mpeg"): Blob {
@@ -51,22 +52,9 @@ export function stripTtsText(input: string): string {
         .trim();
 }
 
-export function toRealtimeSpeakText(input: string, maxChars = 140, maxWords = 22): string {
-    const cleaned = stripTtsText(input)
-        .replace(/\[(AUDIO|YOU|THEM|SCREEN)\]\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?\s*:\s*/gi, " ")
-        .replace(/\[(AUDIO|YOU|THEM|SCREEN)\]\s*/gi, " ")
-        .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)\s*:\s*/gi, " ")
-        .replace(/\b(analysis|summary|key points?|response)\s*:/gi, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-    if (!cleaned) return "";
-
-    const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0]?.trim() || cleaned;
-    const words = firstSentence.split(/\s+/).filter(Boolean).slice(0, Math.max(8, maxWords));
-    const short = words.join(" ").slice(0, Math.max(64, maxChars)).trim();
-    if (!short) return "";
-    if (/[.!?]$/.test(short)) return short;
-    return `${short}.`;
+export function toRealtimeSpeakText(input: string, maxChars = 220, maxWords = 28): string {
+    const cleaned = stripTtsText(input);
+    return selectBestSpokenLine(cleaned, maxChars, maxWords);
 }
 
 export async function synthesizeTts(

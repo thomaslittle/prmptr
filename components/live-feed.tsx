@@ -14,12 +14,9 @@ interface LiveFeedProps {
     onCollapse?: () => void;
 }
 
-/** Match a feed item's source against a configured device name (ignoring the (input)/(output) suffix). */
 function sourceMatchesDevice(source: string, device?: string): boolean {
     if (!device) return false;
-    // Exact match
     if (source === device) return true;
-    // Strip suffix for comparison — e.g. source "Foo (input)" matches device "Foo (output)" base name
     const stripSuffix = (s: string) => s.replace(/\s*\((input|output)\)\s*$/, "");
     return stripSuffix(source) === stripSuffix(device);
 }
@@ -58,7 +55,6 @@ export default memo(function LiveFeed({
 
     return (
         <div className="flex flex-col min-h-0 flex-1">
-            {/* Section header */}
             <div className="flex items-center justify-between px-4 h-10 border-b border-border shrink-0">
                 <div className="flex items-center gap-2">
                     <Waveform weight="bold" className="size-3.5 text-muted-foreground" />
@@ -84,12 +80,7 @@ export default memo(function LiveFeed({
                 </div>
             </div>
 
-            {/* Feed content */}
-            <div
-                ref={bodyRef}
-                className="flex-1 overflow-y-auto min-h-0"
-                style={{ scrollBehavior: "smooth" }}
-            >
+            <div ref={bodyRef} className="flex-1 overflow-y-auto min-h-0" style={{ scrollBehavior: "smooth" }}>
                 {items.length === 0 ? (
                     <Empty className="py-16 border-none text-muted-foreground/50">
                         <EmptyMedia>
@@ -101,9 +92,7 @@ export default memo(function LiveFeed({
                         </EmptyMedia>
                         <EmptyHeader>
                             <EmptyTitle className="text-[11px] font-normal text-muted-foreground/50">
-                                {isConnected
-                                    ? "Listening for activity..."
-                                    : "Start recording to see activity"}
+                                {isConnected ? "Listening for activity..." : "Start recording to see activity"}
                             </EmptyTitle>
                         </EmptyHeader>
                     </Empty>
@@ -112,11 +101,8 @@ export default memo(function LiveFeed({
                         {items.map((item, i) => (
                             <div
                                 key={item.id}
-                                className={`feed-item-enter px-4 py-2.5 ${
-                                    i > 0 ? "border-t border-border" : ""
-                                } hover:bg-muted/30 transition-colors`}
+                                className={`feed-item-enter px-4 py-2.5 ${i > 0 ? "border-t border-border" : ""} hover:bg-muted/30 transition-colors`}
                             >
-                                {/* Meta row */}
                                 <div className="flex items-center gap-1.5 mb-1">
                                     {item.type === "audio" ? (
                                         <Microphone weight="fill" className="size-2.5 text-primary/60" />
@@ -126,9 +112,7 @@ export default memo(function LiveFeed({
 
                                     {item.type === "audio" && (item.deviceType === "input" || sourceMatchesDevice(item.source, inputDevice)) && (
                                         <span className="text-[9px] text-primary/70 font-medium uppercase tracking-wider">
-                                            {item.speaker != null && item.speaker > 1
-                                                ? `You (Speaker ${item.speaker})`
-                                                : "You"}
+                                            {item.speaker != null && item.speaker > 1 ? `You (Speaker ${item.speaker})` : "You"}
                                         </span>
                                     )}
                                     {item.type === "audio" && (item.deviceType === "output" || sourceMatchesDevice(item.source, outputDevice)) && (
@@ -146,11 +130,8 @@ export default memo(function LiveFeed({
                                     </span>
                                 </div>
 
-                                {/* Content */}
                                 <p className="text-[11px] leading-relaxed text-foreground/80">
-                                    {item.content.length > 300
-                                        ? item.content.slice(0, 300) + "..."
-                                        : item.content}
+                                    {item.content.length > 300 ? `${item.content.slice(0, 300)}...` : item.content}
                                 </p>
                             </div>
                         ))}
@@ -160,3 +141,4 @@ export default memo(function LiveFeed({
         </div>
     );
 });
+

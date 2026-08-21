@@ -388,7 +388,7 @@ fn run_whisper(ctx: &whisper_rs::WhisperContext, audio: &[f32], device_label: &s
     }
 
     let text = text.trim().to_string();
-    log::debug!("[{device_label}] Whisper result ({n_segments} segments): '{}'", &text[..text.len().min(80)]);
+    log::debug!("[{device_label}] Whisper result ({n_segments} segments): '{}'", text.chars().take(80).collect::<String>());
 
     if text.len() < 2 {
         return None;
@@ -718,7 +718,7 @@ impl WhisperStreamManager {
                         let timestamp = state.speech_started_at.clone()
                             .unwrap_or_else(|| Utc::now().to_rfc3339());
 
-                        log::debug!("[{device_type}] Emitting final: text='{}'", &text[..text.len().min(60)]);
+                        log::debug!("[{device_type}] Emitting final: text='{}'", text.chars().take(60).collect::<String>());
 
                         let _ = tx.send(TranscriptionResult {
                             id: state.current_partial_id.clone(),
@@ -779,7 +779,7 @@ impl WhisperStreamManager {
                         let timestamp = state.speech_started_at.clone()
                             .unwrap_or_else(|| Utc::now().to_rfc3339());
 
-                        log::debug!("[{device_type}] Emitting partial: text='{}'", &text[..text.len().min(60)]);
+                        log::debug!("[{device_type}] Emitting partial: text='{}'", text.chars().take(60).collect::<String>());
 
                         let _ = tx.send(TranscriptionResult {
                             id: state.current_partial_id.clone(),
@@ -910,7 +910,21 @@ impl WhisperStreamManager {
                         }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        // Worker threads died unexpectedly — surface it to the
+                        // UI instead of leaving "running" state stuck on.
+                        if running_coord.load(Ordering::Relaxed) {
+                            let _ = app_handle.emit(
+                                "local-transcription-status",
+                                serde_json::json!({
+                                    "mode": "local-whisper",
+                                    "running": false,
+                                    "error": "Local transcription worker stopped unexpectedly",
+                                }),
+                            );
+                        }
+                        break;
+                    }
                 }
             }
             log::info!("Coordinator task stopped");
@@ -940,3 +954,4 @@ impl WhisperStreamManager {
         log::info!("Local whisper transcription stopped");
     }
 }
+

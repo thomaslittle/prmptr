@@ -85,6 +85,7 @@ pub fn run() {
             commands::start_local_transcription,
             commands::stop_local_transcription,
             commands::start_direct_deepgram_transcription,
+            commands::update_direct_deepgram_transcription,
             commands::stop_direct_deepgram_transcription,
         ])
         .run(tauri::generate_context!())

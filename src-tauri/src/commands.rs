@@ -203,6 +203,7 @@ pub async fn validate_api_key(
             "openai".to_string(),
         )),
         "groq" => Box::new(crate::llm::groq::new_groq_client(api_key)),
+        "cerebras" => Box::new(crate::llm::cerebras::new_cerebras_client(api_key)),
         "lmstudio" => Box::new(crate::llm::lmstudio::new_lmstudio_client(base_url)),
         _ => return Err(format!("Unknown provider: {}", provider)),
     };
@@ -286,6 +287,10 @@ pub async fn trigger_llm(
             let key = api_key.ok_or("Groq API key required")?;
             Box::new(crate::llm::groq::new_groq_client(key))
         }
+        "cerebras" => {
+            let key = api_key.ok_or("Cerebras API key required")?;
+            Box::new(crate::llm::cerebras::new_cerebras_client(key))
+        }
         "lmstudio" => {
             Box::new(crate::llm::lmstudio::new_lmstudio_client(base_url))
         }
@@ -352,13 +357,55 @@ pub async fn start_direct_deepgram_transcription(
     input_device_name: Option<String>,
     output_device_name: Option<String>,
     api_key: String,
+    mute_input: Option<bool>,
+    mute_output: Option<bool>,
 ) -> Result<(), String> {
     let config = crate::transcription::deepgram_stream::DirectDeepgramConfig {
         input_device_name,
         output_device_name,
         api_key,
+        mute_input: mute_input.unwrap_or(false),
+        mute_output: mute_output.unwrap_or(false),
     };
     let mut mgr = deepgram.lock().await;
+    mgr.start(app, config)
+}
+
+#[tauri::command]
+pub async fn update_direct_deepgram_transcription(
+    app: tauri::AppHandle,
+    deepgram: State<'_, Arc<Mutex<crate::transcription::deepgram_stream::DirectDeepgramStreamManager>>>,
+    input_device_name: Option<String>,
+    output_device_name: Option<String>,
+    api_key: String,
+    mute_input: Option<bool>,
+    mute_output: Option<bool>,
+) -> Result<(), String> {
+    let config = crate::transcription::deepgram_stream::DirectDeepgramConfig {
+        input_device_name,
+        output_device_name,
+        api_key,
+        mute_input: mute_input.unwrap_or(false),
+        mute_output: mute_output.unwrap_or(false),
+    };
+
+    // Mirror DirectDeepgramStreamManager::start constraints:
+    // if both sides are effectively muted/unavailable, treat as a valid "paused" state.
+    let has_input = !config.mute_input;
+    let has_output = config.output_device_name.is_some() && !config.mute_output;
+    let mut mgr = deepgram.lock().await;
+
+    if !has_input && !has_output {
+        if mgr.is_running() {
+            mgr.stop();
+        }
+        return Ok(());
+    }
+
+    if mgr.is_running() {
+        mgr.stop();
+        return mgr.start(app, config);
+    }
     mgr.start(app, config)
 }
 
@@ -460,7 +507,12 @@ pub fn get_local_transcription_gpu_status() -> Result<LocalGpuStatus, String> {
 
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
-    open::that(url).map_err(|e| format!("Failed to open URL: {e}"))?;
+    // Only allow plain web links — never arbitrary URI schemes (file:, ms-*:, etc.)
+    let parsed = url::Url::parse(&url).map_err(|_| "Invalid URL".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Only http(s) URLs can be opened".to_string());
+    }
+    open::that(parsed.as_str()).map_err(|e| format!("Failed to open URL: {e}"))?;
     Ok(())
 }
 
@@ -580,6 +632,7 @@ async fn ensure_sherpa_kokoro_assets(app: &tauri::AppHandle) -> Result<PathBuf, 
     if !archive_path.exists() {
         let client = reqwest::Client::builder()
             .user_agent("prmptr-sherpa-tts-downloader")
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| format!("HTTP client error: {e}"))?;
         let response = client
@@ -860,6 +913,8 @@ pub async fn proxy_tts_synthesize(
     }
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) PRMPTR-TTS/1.0")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
     let mut errors: Vec<String> = Vec::new();
@@ -893,7 +948,9 @@ pub async fn proxy_tts_synthesize(
         }
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        errors.push(format!("POST {url} -> {status}: {body}"));
+        // Truncate error bodies so upstream content can't flood IPC responses.
+        let body_snippet: String = body.chars().take(300).collect();
+        errors.push(format!("POST {url} -> {status}: {body_snippet}"));
     }
 
     Err(format!(
@@ -925,7 +982,10 @@ pub async fn proxy_tts_list_voices(endpoint: String, api_key: Option<String>) ->
         format!("{}/audio/voices", base),
     ];
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
     let mut errors = Vec::new();
     for url in candidates {
         let response = match with_tts_auth(client.get(&url), api_key.as_deref()).send().await {
@@ -1059,6 +1119,7 @@ pub async fn download_whisper_model(
 
     let client = reqwest::Client::builder()
         .user_agent("prmptr-whisper-model-downloader")
+        .connect_timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
@@ -1081,12 +1142,19 @@ pub async fn download_whisper_model(
         .map_err(|e| format!("Failed to create model file: {e}"))?;
 
     let mut stream = response.bytes_stream();
+    // Safety cap: refuse absurdly large downloads (largest whisper model ~3 GB).
+    const MAX_MODEL_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Download stream error: {e}"))?;
         use std::io::Write;
         file.write_all(&chunk)
             .map_err(|e| format!("Failed to write model file: {e}"))?;
         downloaded += chunk.len() as u64;
+        if downloaded > MAX_MODEL_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = std::fs::remove_file(&model_path);
+            return Err("Download exceeded maximum expected size; aborted".to_string());
+        }
 
         let pct = if let Some(total) = total_size {
             if total > 0 {

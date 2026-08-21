@@ -163,6 +163,32 @@ export function shortcutToLabel(str: string): string {
     return labels.join("+");
 }
 
+/**
+ * Convert our shortcut format to Tauri global shortcut format.
+ * Uses CommandOrControl for cross-platform (Ctrl on Win/Linux, Cmd on Mac).
+ */
+export function toTauriGlobalShortcut(str: string): string {
+    const parts = str.toLowerCase().split("+").map((p) => p.trim());
+    const out: string[] = [];
+    let keyPart = "";
+    for (const part of parts) {
+        if (part === "ctrl" || part === "control") out.push("CommandOrControl");
+        else if (part === "shift") out.push("Shift");
+        else if (part === "alt") out.push("Alt");
+        else if (part === "meta" || part === "super" || part === "cmd" || part === "command") out.push("Super");
+        else keyPart = part;
+    }
+    if (keyPart) {
+        const code = KEY_TO_CODE[keyPart];
+        if (code === "Space") out.push("Space");
+        else if (code?.startsWith("Key")) out.push(code.slice(3));
+        else if (code?.startsWith("Digit")) out.push(code);
+        else if (code?.startsWith("F") && /^F\d+$/.test(code)) out.push(code);
+        else out.push(keyPart.charAt(0).toUpperCase() + keyPart.slice(1));
+    }
+    return out.join("+");
+}
+
 /** Check if a keyboard event code is a modifier key (not a "real" key). */
 export function isModifierKey(code: string): boolean {
     return (

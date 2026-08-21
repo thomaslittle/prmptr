@@ -186,6 +186,55 @@
   animation: status-pulse 2s ease-in-out infinite;
 }
 
+/* Live audio activity chips (input/output) */
+.audio-meter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--border);
+  padding: 0.1rem 0.3rem;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in oklab, var(--muted-foreground) 86%, white 14%);
+  background: color-mix(in oklab, var(--muted) 75%, transparent);
+}
+.audio-meter-label {
+  line-height: 1;
+}
+.audio-meter-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 10px;
+}
+.audio-meter-bars i {
+  display: block;
+  width: 2px;
+  height: 3px;
+  background: currentColor;
+  opacity: 0.45;
+  transform-origin: bottom;
+}
+.audio-meter-chip.is-active {
+  color: color-mix(in oklab, var(--primary) 78%, white 22%);
+  border-color: color-mix(in oklab, var(--primary) 45%, var(--border) 55%);
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+}
+@keyframes audio-bars {
+  0%, 100% { transform: scaleY(0.45); opacity: 0.7; }
+  50% { transform: scaleY(1.85); opacity: 1; }
+}
+.audio-meter-chip.is-active .audio-meter-bars i {
+  animation: audio-bars 0.62s ease-in-out infinite;
+}
+.audio-meter-chip.is-active .audio-meter-bars i:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.audio-meter-chip.is-active .audio-meter-bars i:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
 /* Feed item entrance */
 @keyframes slide-in {
   from {

@@ -32,43 +32,55 @@ function generateTitle(config: SessionConfig): string {
     return `${label} — ${date} ${time}`;
 }
 
+async function loadSessionSummaries(): Promise<SessionSummary[]> {
+    const allSessions = await db.sessions
+        .orderBy("updatedAt")
+        .reverse()
+        .toArray();
+
+    const summaries: SessionSummary[] = await Promise.all(
+        allSessions.map(async (s: DBSession) => {
+            const count = await db.responses
+                .where("sessionId")
+                .equals(s.id)
+                .count();
+            return {
+                id: s.id,
+                title: s.title,
+                updatedAt: s.updatedAt,
+                responseCount: count,
+                model: s.config.model,
+                starred: s.starred,
+            };
+        })
+    );
+
+    summaries.sort((a, b) => {
+        if (a.starred && !b.starred) return -1;
+        if (!a.starred && b.starred) return 1;
+        return 0; // preserve updatedAt order within each group
+    });
+    return summaries;
+}
+
 export function useSessionHistory() {
     const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
     const refreshList = useCallback(async () => {
-        const allSessions = await db.sessions
-            .orderBy("updatedAt")
-            .reverse()
-            .toArray();
-
-        const summaries: SessionSummary[] = await Promise.all(
-            allSessions.map(async (s: DBSession) => {
-                const count = await db.responses
-                    .where("sessionId")
-                    .equals(s.id)
-                    .count();
-                return {
-                    id: s.id,
-                    title: s.title,
-                    updatedAt: s.updatedAt,
-                    responseCount: count,
-                    model: s.config.model,
-                    starred: s.starred,
-                };
-            })
-        );
-
-        summaries.sort((a, b) => {
-            if (a.starred && !b.starred) return -1;
-            if (!a.starred && b.starred) return 1;
-            return 0; // preserve updatedAt order within each group
-        });
+        const summaries = await loadSessionSummaries();
         setSessions(summaries);
     }, []);
 
     useEffect(() => {
-        refreshList();
-    }, [refreshList]);
+        let alive = true;
+        (async () => {
+            const summaries = await loadSessionSummaries();
+            if (alive) setSessions(summaries);
+        })();
+        return () => {
+            alive = false;
+        };
+    }, []);
 
     const createSession = useCallback(
         async (config: SessionConfig): Promise<string> => {
@@ -118,6 +130,7 @@ export function useSessionHistory() {
                     model: r.model,
                     type: r.type,
                     userMessage: r.userMessage,
+                    screenshotDataUrl: r.screenshotDataUrl,
                 })),
                 feedItems: feedRows.map((f) => ({
                     id: f.id,
@@ -145,6 +158,7 @@ export function useSessionHistory() {
                 model: entry.model,
                 type: entry.type,
                 userMessage: entry.userMessage,
+                screenshotDataUrl: entry.screenshotDataUrl,
             });
             await db.sessions.update(sessionId, {
                 updatedAt: new Date().toISOString(),

@@ -18,6 +18,7 @@ export interface DBResponse {
     model: string;
     type?: "analysis" | "chat";
     userMessage?: string;
+    screenshotDataUrl?: string;
 }
 
 export interface DBFeedItem {
@@ -33,10 +34,16 @@ export interface DBFeedItem {
     isFinal?: boolean;
 }
 
+export interface DBPreference {
+    key: string;
+    value: string;
+}
+
 const db = new Dexie("prmptr") as Dexie & {
     sessions: EntityTable<DBSession, "id">;
     responses: EntityTable<DBResponse, "id">;
     feedItems: EntityTable<DBFeedItem, "id">;
+    preferences: EntityTable<DBPreference, "key">;
 };
 
 db.version(1).stores({
@@ -50,4 +57,20 @@ db.version(2).stores({
     feedItems: "id, sessionId, timestamp",
 });
 
+db.version(3).stores({
+    sessions: "id, updatedAt",
+    responses: "id, sessionId, timestamp",
+    feedItems: "id, sessionId, timestamp",
+    preferences: "key",
+});
+
 export { db };
+
+export async function getPreference(key: string): Promise<string | undefined> {
+    const row = await db.preferences.get(key);
+    return row?.value;
+}
+
+export async function setPreference(key: string, value: string): Promise<void> {
+    await db.preferences.put({ key, value });
+}

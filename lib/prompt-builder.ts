@@ -163,9 +163,13 @@ function getResponseStyleInstructions(style: ResponseStyle, personality: Persona
 - Output exactly one short line the user can say directly in-game
 - No markdown, no bullets, no titles, no explanations, no quotes
 - Keep it natural spoken dialog, under ~20 words
+- Start with the direct answer immediately, then optional tone
+- For factual questions, put the fact in the first clause (no preamble)
+- No banter openers like "You're really testing me..." or "Great question..."
 - Never output transcript/source markers like [AUDIO], [YOU], [THEM], timestamps, or metadata
 - Do not repeat or paste transcript text; produce only the direct reply line to speak
-- Return only the final spoken line`;
+- Return only the final spoken line
+- These rules override personality flourish when they conflict`;
     }
 
     if (style === "concise") {
@@ -306,6 +310,31 @@ function formatFeedItems(items: FeedItem[], devices?: DeviceNames): string {
 }
 
 export function buildSystemPrompt(config: SessionConfig): string {
+    const looksLikeInterviewContext = /technical interview|coding interview|interview/i.test(
+        config.context || ""
+    );
+    const interviewCodingOverride = looksLikeInterviewContext
+        ? [
+            "",
+            "TECHNICAL INTERVIEW OVERRIDE:",
+            "- If coding is being discussed or a coding question is asked, provide a concrete code solution.",
+            "- Include a short explanation and a runnable code block when useful.",
+            "- In coding mode, you may output code directly instead of only spoken quotes.",
+            "- Prefer clear, interview-ready solutions with time/space complexity notes when relevant.",
+        ].join("\n")
+        : "";
+
+    const aiVoiceHardOverride =
+        config.responseStyle === "ai-voice"
+            ? [
+                "",
+                "CRITICAL OVERRIDE FOR AI VOICE:",
+                "- Ignore any conflicting instruction about multiple options, section headers, bullets, or markdown.",
+                "- Output exactly one short spoken sentence.",
+                "- If a factual question was asked, answer it directly with the fact first.",
+            ].join("\n")
+            : "";
+
     const parts = [
         BASE_INSTRUCTIONS,
         "",
@@ -315,6 +344,8 @@ export function buildSystemPrompt(config: SessionConfig): string {
         config.context || "Listen to conversations and suggest things to say based on personality.",
         "",
         getResponseStyleInstructions(config.responseStyle, config.personality ?? "roast"),
+        interviewCodingOverride,
+        aiVoiceHardOverride,
         "",
         `Trigger mode: ${config.triggerMode === "manual" ? "Manual — the user explicitly asked for your input right now. Make it count." : "Automatic — you're receiving live transcriptions. Always give fresh suggestions based on the latest dialog."}`,
     ];

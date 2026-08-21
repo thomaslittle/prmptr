@@ -1,18 +1,32 @@
 import { NextRequest } from "next/server";
 import WebSocket from "ws";
+import { guardTrustedRequest, parseLocalHttpUrl, httpUrlToWebSocketUrl, LocalUrlError } from "@/lib/api-guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+    const untrusted = guardTrustedRequest(request);
+    if (untrusted) return untrusted;
+
     const searchParams = request.nextUrl.searchParams;
     const screenpipeUrl =
         searchParams.get("screenpipeUrl") || "http://localhost:3030";
 
+    let wsBase: string;
+    try {
+        wsBase = httpUrlToWebSocketUrl(parseLocalHttpUrl(screenpipeUrl));
+    } catch (err) {
+        return new Response(
+            JSON.stringify({
+                error: err instanceof LocalUrlError ? err.message : "Invalid screenpipeUrl",
+            }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+    }
+
     const images = searchParams.get("images") ?? "false";
 
-    const wsUrl = screenpipeUrl
-        .replace(/^https:/, "wss:")
-        .replace(/^http:/, "ws:");
+    const wsUrl = `${wsBase}/ws/events?images=${images}`;
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -27,7 +41,7 @@ export async function GET(request: NextRequest) {
                 }
             };
 
-            const ws = new WebSocket(`${wsUrl}/ws/events?images=${images}`);
+            const ws = new WebSocket(wsUrl);
 
             ws.on("open", () => {
                 sendEvent({ type: "status", connected: true, message: "Connected to realtime stream" });

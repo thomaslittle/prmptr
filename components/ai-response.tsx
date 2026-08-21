@@ -1,25 +1,32 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useSyncExternalStore } from "react";
+import { ErrorBoundary } from "@/components/error-boundary";
+
+const subscribeNoop = () => () => {};
 import {
     FeedItem,
     LLMProvider,
     SessionConfig,
     ResponseEntry,
+    AppSettings,
 } from "@/lib/types";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useSessionStore } from "@/lib/stores/session-store";
 import { buildSystemPrompt, buildUserMessage, buildChatPrompt, truncateFeedItems, DeviceNames } from "@/lib/prompt-builder";
+import { selectBestSpokenLine } from "@/lib/spoken-line";
+import { isTauri, captureNativeScreenshotViaTauri } from "@/lib/tauri";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Lightning, PaperPlaneTilt, Eraser, CircleNotch, Brain, ChatCircle, Lightbulb, PushPin } from "@phosphor-icons/react";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
 
 interface AiResponseProps {
     feedItems: FeedItem[];
     sessionConfig: SessionConfig;
-    apiKeys: { anthropic?: string; openai?: string; groq?: string };
+    apiKeys: AppSettings["apiKeys"];
     lmstudioUrl?: string;
     triggerCount?: number;
     clearCount?: number;
@@ -38,8 +45,98 @@ class RateLimitError extends Error {
 }
 
 /** Stream from /api/llm and call onToken for each chunk. Returns the full response text. */
-async function streamFromLLM(
-    body: Record<string, unknown>,
+type LlmBody = Record<string, unknown>;
+type ProviderModelMeta = { id: string; supportsImageInput?: boolean };
+type ProviderModelsResponse = { models?: Array<string | ProviderModelMeta> };
+type CachedCapabilityMap = {
+    expiresAt: number;
+    byId: Record<string, boolean | undefined>;
+};
+
+const providerModelCapabilityCache = new Map<string, CachedCapabilityMap>();
+const PROVIDER_MODEL_CAPABILITY_TTL_MS = 5 * 60_000;
+
+function modelSupportsImageInput(provider: LLMProvider, model: string): boolean {
+    const id = model.toLowerCase();
+
+    // Generic vision/multimodal markers used across OpenAI-compatible providers.
+    const hasVisionMarker =
+        /\b(vision|vl|multimodal|omni)\b/.test(id) ||
+        /(gpt-4o|gpt-4\.1|llava|pixtral|qwen2\.?5-vl|gemma-3|llama-3\.2-.*vision|llama-4)/.test(id);
+
+    // LM Studio/OpenAI are typically most permissive for image_url content.
+    if (provider === "lmstudio" || provider === "openai") {
+        return hasVisionMarker || /(gpt-4o|gpt-4\.1)/.test(id);
+    }
+
+    // Groq/Cerebras support depends on the selected model; only send when model appears multimodal.
+    if (provider === "groq" || provider === "cerebras") {
+        return hasVisionMarker;
+    }
+
+    return false;
+}
+
+async function fetchModelImageSupportExact(params: {
+    provider: LLMProvider;
+    model: string;
+    apiKey?: string;
+    baseUrl?: string;
+}): Promise<boolean | undefined> {
+    const { provider, model, apiKey, baseUrl } = params;
+    const cacheKey = `${provider}|${apiKey || ""}|${baseUrl || ""}`;
+    const now = Date.now();
+    const cached = providerModelCapabilityCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+        return cached.byId[model];
+    }
+
+    const body: { provider: LLMProvider; apiKey?: string; baseUrl?: string } = {
+        provider,
+    };
+    if (provider !== "lmstudio" && apiKey) body.apiKey = apiKey;
+    if (provider === "lmstudio" && baseUrl) body.baseUrl = baseUrl;
+
+    try {
+        const resp = await fetch("/api/provider-models", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) return undefined;
+        const data = (await resp.json()) as ProviderModelsResponse;
+        const byId: Record<string, boolean | undefined> = {};
+        for (const entry of data.models ?? []) {
+            if (typeof entry === "string") {
+                byId[entry] = undefined;
+                continue;
+            }
+            if (!entry?.id) continue;
+            byId[entry.id] =
+                typeof entry.supportsImageInput === "boolean"
+                    ? entry.supportsImageInput
+                    : undefined;
+        }
+        providerModelCapabilityCache.set(cacheKey, {
+            byId,
+            expiresAt: now + PROVIDER_MODEL_CAPABILITY_TTL_MS,
+        });
+        return byId[model];
+    } catch {
+        return undefined;
+    }
+}
+
+function isRateLimitMessage(msg: string): boolean {
+    return msg.includes("429") || msg.includes("rate_limit");
+}
+
+function fallbackModelForProvider(provider: "groq" | "cerebras"): string {
+    return provider === "groq" ? "llama-3.1-8b-instant" : "llama-3.1-8b";
+}
+
+async function streamFromLLMOnce(
+    body: LlmBody,
     onToken: (fullText: string) => void,
     signal?: AbortSignal
 ): Promise<string> {
@@ -59,7 +156,7 @@ async function streamFromLLM(
             const retryHeader = response.headers.get("retry-after");
             if (retryHeader) retryAfterMs = parseInt(retryHeader) * 1000;
             throw new RateLimitError(
-                `Rate limited — retry in ${Math.ceil(retryAfterMs / 1000)}s`,
+                `Rate limited - retry in ${Math.ceil(retryAfterMs / 1000)}s`,
                 retryAfterMs
             );
         }
@@ -82,38 +179,117 @@ async function streamFromLLM(
         buffer = lines.pop() || "";
 
         for (const line of lines) {
-            if (line.startsWith("data: ")) {
-                try {
-                    const data = JSON.parse(line.slice(6));
-                    if (data.type === "token") {
-                        fullResponse += data.text;
-                        onToken(fullResponse);
-                    } else if (data.type === "error") {
-                        // Detect rate limit errors and throw so callers can back off
-                        const msg: string = data.message || "";
-                        const is429 = msg.includes("429") || msg.includes("rate_limit");
-                        if (is429) {
-                            const retryMatch = msg.match(/try again in ([\d.]+)s/i);
-                            const retryMs = retryMatch
-                                ? Math.ceil(parseFloat(retryMatch[1]) * 1000) + 500
-                                : 15_000;
-                            throw new RateLimitError(
-                                `Rate limited — retry in ${Math.ceil(retryMs / 1000)}s`,
-                                retryMs
-                            );
-                        }
-                        fullResponse += `\n\nError: ${msg}`;
-                        onToken(fullResponse);
-                    }
-                } catch (e) {
-                    if (e instanceof RateLimitError) throw e;
-                    // skip parse errors
+            if (!line.startsWith("data: ")) continue;
+            try {
+                const data = JSON.parse(line.slice(6));
+                if (data.type === "token") {
+                    fullResponse += data.text;
+                    onToken(fullResponse);
+                    continue;
                 }
+                if (data.type === "error") {
+                    const msg: string = data.message || "";
+                    if (isRateLimitMessage(msg)) {
+                        const retryMatch = msg.match(/try again in ([\d.]+)s/i);
+                        const retryMs = retryMatch
+                            ? Math.ceil(parseFloat(retryMatch[1]) * 1000) + 500
+                            : 15_000;
+                        throw new RateLimitError(
+                            `Rate limited - retry in ${Math.ceil(retryMs / 1000)}s`,
+                            retryMs
+                        );
+                    }
+                    fullResponse += `\n\nError: ${msg}`;
+                    onToken(fullResponse);
+                }
+            } catch (e) {
+                if (e instanceof RateLimitError) throw e;
             }
         }
     }
 
     return fullResponse;
+}
+
+async function streamFromLLM(
+    body: LlmBody,
+    onToken: (fullText: string) => void,
+    signal?: AbortSignal,
+    fallbackBodies: LlmBody[] = []
+): Promise<string> {
+    const attempts = [body, ...fallbackBodies];
+    let lastRateLimitError: RateLimitError | null = null;
+
+    for (let i = 0; i < attempts.length; i++) {
+        try {
+            return await streamFromLLMOnce(attempts[i], onToken, signal);
+        } catch (err) {
+            if (
+                err instanceof RateLimitError &&
+                i < attempts.length - 1 &&
+                !signal?.aborted
+            ) {
+                lastRateLimitError = err;
+                onToken("");
+                continue;
+            }
+            throw err;
+        }
+    }
+
+    throw lastRateLimitError ?? new Error("LLM request failed");
+}
+
+async function fetchLatestScreenFrame(screenpipeUrl?: string): Promise<string | undefined> {
+    if (isTauri()) {
+        const native = await captureNativeScreenshotViaTauri();
+        if (native) return native;
+    }
+    if (!screenpipeUrl) return undefined;
+    try {
+        const resp = await fetch(`/api/screen-frame?screenpipeUrl=${encodeURIComponent(screenpipeUrl)}`, {
+            method: "GET",
+        });
+        if (!resp.ok) return undefined;
+        const data = (await resp.json()) as { ok?: boolean; imageDataUrl?: string };
+        if (!data?.ok || typeof data.imageDataUrl !== "string" || !data.imageDataUrl.trim()) {
+            return undefined;
+        }
+        return data.imageDataUrl;
+    } catch {
+        return undefined;
+    }
+}
+
+async function optimizeImageDataUrl(dataUrl: string): Promise<string> {
+    if (typeof window === "undefined") return dataUrl;
+    if (!dataUrl.startsWith("data:image/")) return dataUrl;
+
+    try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => reject(new Error("Failed to load screenshot for optimization"));
+            el.src = dataUrl;
+        });
+
+        const maxDimension = 1280;
+        const scale = Math.min(1, maxDimension / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return dataUrl;
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const compressed = canvas.toDataURL("image/jpeg", 0.72);
+        return compressed.length < dataUrl.length ? compressed : dataUrl;
+    } catch {
+        return dataUrl;
+    }
 }
 
 // ── Response Section Parser ─────────────────────────────────
@@ -225,15 +401,35 @@ function sanitizeAiVoiceContent(content: string): string {
         .trim();
 }
 
-function clampAiVoiceLine(content: string, maxWords = 22, maxChars = 140): string {
-    const cleaned = sanitizeAiVoiceContent(content);
+function clampAiVoiceLine(content: string, maxWords = 28, maxChars = 220): string {
+    const cleaned = sanitizeAiVoiceContent(content)
+        .trim();
     if (!cleaned) return "";
-    const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0]?.trim() || cleaned;
-    const words = firstSentence.split(/\s+/).filter(Boolean).slice(0, Math.max(8, maxWords));
-    const short = words.join(" ").slice(0, Math.max(64, maxChars)).trim();
-    if (!short) return "";
-    if (/[.!?]$/.test(short)) return short;
-    return `${short}.`;
+    return selectBestSpokenLine(cleaned, maxChars, maxWords);
+}
+
+function extractLatestQuestion(items: FeedItem[]): string | null {
+    for (let i = items.length - 1; i >= 0; i--) {
+        const content = (items[i]?.content || "").trim();
+        if (!content) continue;
+        const matches = content.match(/[^?]*\?/g);
+        if (matches && matches.length > 0) {
+            return matches[matches.length - 1].trim();
+        }
+    }
+    return null;
+}
+
+function isWeakAiVoiceLine(line: string): boolean {
+    const s = line.trim().toLowerCase();
+    if (!s) return true;
+    if (s.split(/\s+/).length < 6) return true;
+    return (
+        /testing my patience/.test(s) ||
+        /master of chaos/.test(s) ||
+        /allergic to the third amendment/.test(s) ||
+        /\b(you'?re really|dude|bro|genius|sanity|limits)\b/.test(s)
+    );
 }
 
 const CATEGORY_ICONS: Record<SectionCategory, typeof Lightning> = {
@@ -244,6 +440,22 @@ const CATEGORY_ICONS: Record<SectionCategory, typeof Lightning> = {
 };
 
 function ResponseContent({ content, plain = false }: { content: string; plain?: boolean }) {
+    // Model output is untrusted — a malformed stream must not unmount the app.
+    return (
+        <ErrorBoundary
+            label="Response"
+            fallback={
+                <div className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">
+                    {content}
+                </div>
+            }
+        >
+            <ResponseContentInner content={content} plain={plain} />
+        </ErrorBoundary>
+    );
+}
+
+function ResponseContentInner({ content, plain = false }: { content: string; plain?: boolean }) {
     if (plain) {
         return (
             <div className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">
@@ -303,8 +515,11 @@ export default function AiResponse({
 }: AiResponseProps) {
     const { settings } = useSettingsStore();
     const { responses, addResponse, clearResponses } = useSessionStore();
-    const [mounted, setMounted] = useState(false);
-    useEffect(() => setMounted(true), []);
+    const mounted = useSyncExternalStore(
+        subscribeNoop,
+        () => true,
+        () => false
+    );
     const [currentResponse, setCurrentResponse] = useState("");
     const [isStreaming, setIsStreaming] = useState(false);
     const [chatInput, setChatInput] = useState("");
@@ -321,29 +536,44 @@ export default function AiResponse({
     const streamingStartedAtRef = useRef(0);
     const abortControllerRef = useRef<AbortController | null>(null);
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
+    const [lightboxImage, setLightboxImage] = useState<string | null>(null);
     const rateLimitedUntilRef = useRef(0);
     const devicesRef = useRef(devices);
-    devicesRef.current = devices;
+    useEffect(() => {
+        devicesRef.current = devices;
+    }, [devices]);
 
     const feedItemsRef = useRef(feedItems);
-    feedItemsRef.current = feedItems;
+    useEffect(() => {
+        feedItemsRef.current = feedItems;
+    }, [feedItems]);
 
     // Pre-seed seen items when restoring a session that already has responses.
     // This prevents re-analyzing archived content from the previous launch.
-    if (!hasSeededSeenRef.current && responses.length > 0 && seenItemIdsRef.current.size === 0 && feedItems.length > 0) {
-        hasSeededSeenRef.current = true;
-        for (const item of feedItems) {
-            seenItemIdsRef.current.add(item.id);
+    useEffect(() => {
+        if (!hasSeededSeenRef.current && responses.length > 0 && seenItemIdsRef.current.size === 0 && feedItems.length > 0) {
+            hasSeededSeenRef.current = true;
+            for (const item of feedItems) {
+                seenItemIdsRef.current.add(item.id);
+            }
         }
-    }
+    }, [responses.length, feedItems]);
     const sessionConfigRef = useRef(sessionConfig);
-    sessionConfigRef.current = sessionConfig;
+    useEffect(() => {
+        sessionConfigRef.current = sessionConfig;
+    }, [sessionConfig]);
     const apiKeysRef = useRef(apiKeys);
-    apiKeysRef.current = apiKeys;
+    useEffect(() => {
+        apiKeysRef.current = apiKeys;
+    }, [apiKeys]);
     const lmstudioUrlRef = useRef(lmstudioUrl);
-    lmstudioUrlRef.current = lmstudioUrl;
+    useEffect(() => {
+        lmstudioUrlRef.current = lmstudioUrl;
+    }, [lmstudioUrl]);
     const onResponseCompleteRef = useRef(onResponseComplete);
-    onResponseCompleteRef.current = onResponseComplete;
+    useEffect(() => {
+        onResponseCompleteRef.current = onResponseComplete;
+    }, [onResponseComplete]);
 
     /** Get the LLM request base fields (apiKey, baseUrl, model, provider) */
     const getLLMConfig = useCallback(() => {
@@ -351,7 +581,9 @@ export default function AiResponse({
         const keys = apiKeysRef.current;
         const lmUrl = lmstudioUrlRef.current;
         const isLmStudio = config.provider === "lmstudio";
-        const apiKey = isLmStudio ? "" : keys[config.provider as Exclude<LLMProvider, "lmstudio">];
+        const apiKey = isLmStudio
+            ? ""
+            : keys[config.provider as Exclude<LLMProvider, "lmstudio">] || "";
         const lmBaseUrl = (() => {
             const raw = (lmUrl || "http://localhost:1234").trim().replace(/\/+$/, "");
             return raw.endsWith("/v1") ? raw : `${raw}/v1`;
@@ -363,6 +595,30 @@ export default function AiResponse({
             apiKey: apiKey || "",
             baseUrl: isLmStudio ? lmBaseUrl : undefined,
         };
+    }, []);
+
+    const getRateLimitFallbackBodies = useCallback((baseBody: LlmBody): LlmBody[] => {
+        const config = sessionConfigRef.current;
+        const keys = apiKeysRef.current;
+        if (config.provider === "groq" && keys.cerebras) {
+            return [{
+                ...baseBody,
+                provider: "cerebras",
+                apiKey: keys.cerebras,
+                model: fallbackModelForProvider("cerebras"),
+                baseUrl: undefined,
+            }];
+        }
+        if (config.provider === "cerebras" && keys.groq) {
+            return [{
+                ...baseBody,
+                provider: "groq",
+                apiKey: keys.groq,
+                model: fallbackModelForProvider("groq"),
+                baseUrl: undefined,
+            }];
+        }
+        return [];
     }, []);
 
     const triggerAnalysis = useCallback(async () => {
@@ -414,7 +670,10 @@ export default function AiResponse({
         if (newItems.length === 0 && config.triggerMode !== "manual") return;
 
         const isLmStudio = config.provider === "lmstudio";
-        const apiKey = isLmStudio ? "" : keys[config.provider as Exclude<LLMProvider, "lmstudio">];
+        const apiKey =
+            config.provider === "lmstudio"
+                ? ""
+                : keys[config.provider as Exclude<LLMProvider, "lmstudio">];
         if (!isLmStudio && !apiKey) {
             setStatusMessage(`No API key for ${config.provider}`);
             return;
@@ -449,7 +708,7 @@ export default function AiResponse({
         setStatusMessage(null);
 
         try {
-            const systemPrompt = buildSystemPrompt(config);
+            let attachedScreenshotDataUrl: string | undefined;
             const requestedBudget = config.contextSize || 6000;
             // LM Studio / llama.cpp models often run with 4k context windows.
             // Keep prompt budgets conservative to avoid n_ctx overflow errors.
@@ -465,23 +724,87 @@ export default function AiResponse({
             // Cap context to 20 most recent items before token-truncating
             const cappedContext = hasNew ? contextItems.slice(-20) : [];
             const truncatedContext = truncateFeedItems(cappedContext, ctxBudget);
-            const userMessage = buildUserMessage(truncatedNew, truncatedContext, config.personality, devicesRef.current);
-            const outTokens = config.responseStyle === "ai-voice" ? 72 : config.responseStyle === "concise" ? 320 : 640;
+            const latestQuestion =
+                config.responseStyle === "ai-voice"
+                    ? extractLatestQuestion(truncatedNew)
+                    : null;
+            const useDirectQuestionMode =
+                config.responseStyle === "ai-voice" && !!latestQuestion;
 
+            const systemPrompt = useDirectQuestionMode
+                ? "You are a real-time voice copilot. Return exactly one short spoken sentence that directly answers the user's latest question. No banter, no jokes, no quotes, no markdown, no roleplay, no preamble."
+                : buildSystemPrompt(config);
+            const userMessage = useDirectQuestionMode
+                ? `Latest question: ${latestQuestion}\nAnswer this directly in one short spoken sentence.`
+                : buildUserMessage(truncatedNew, truncatedContext, config.personality, devicesRef.current);
+            const outTokens = useDirectQuestionMode ? 80 : config.responseStyle === "ai-voice" ? 160 : config.responseStyle === "concise" ? 320 : 640;
+
+            const primaryBody: LlmBody = {
+                systemPrompt,
+                userMessage,
+                ...getLLMConfig(),
+                maxTokens: outTokens,
+                temperature: useDirectQuestionMode ? 0.15 : config.personality === "unhinged" ? 0.9 : config.responseStyle === "ai-voice" ? 0.35 : config.responseStyle === "concise" ? 0.3 : 0.5,
+            };
+            if (
+                settings.includeScreenshotOnAnalyze &&
+                (
+                    (
+                        await fetchModelImageSupportExact({
+                            provider: config.provider,
+                            model: config.model,
+                            apiKey: typeof primaryBody.apiKey === "string" ? primaryBody.apiKey : undefined,
+                            baseUrl: typeof primaryBody.baseUrl === "string" ? primaryBody.baseUrl : undefined,
+                        })
+                    ) ?? modelSupportsImageInput(config.provider, config.model)
+                )
+            ) {
+                const imageDataUrl = await fetchLatestScreenFrame(settings.screenpipeUrl);
+                if (imageDataUrl) {
+                    const optimized = await optimizeImageDataUrl(imageDataUrl);
+                    primaryBody.imageDataUrl = optimized;
+                    attachedScreenshotDataUrl = optimized;
+                    primaryBody.userMessage = `${String(primaryBody.userMessage)}\n\n[VISUAL_CONTEXT_ATTACHED=yes]`;
+                } else {
+                    primaryBody.userMessage = `${String(primaryBody.userMessage)}\n\n[VISUAL_CONTEXT_ATTACHED=no]`;
+                }
+            } else if (settings.includeScreenshotOnAnalyze) {
+                primaryBody.userMessage = `${String(primaryBody.userMessage)}\n\n[VISUAL_CONTEXT_ATTACHED=unsupported_provider]`;
+            }
             const fullResponse = await streamFromLLM(
-                {
-                    systemPrompt,
-                    userMessage,
-                    ...getLLMConfig(),
-                    maxTokens: outTokens,
-                    temperature: config.personality === "unhinged" ? 0.9 : config.responseStyle === "ai-voice" ? 0.35 : config.responseStyle === "concise" ? 0.3 : 0.5,
-                },
+                primaryBody,
                 setCurrentResponse,
-                controller.signal
+                controller.signal,
+                getRateLimitFallbackBodies(primaryBody)
             );
 
-            const normalizedResponse =
+            let normalizedResponse =
                 config.responseStyle === "ai-voice" ? clampAiVoiceLine(fullResponse) : fullResponse;
+
+            if (
+                config.responseStyle === "ai-voice" &&
+                isWeakAiVoiceLine(normalizedResponse)
+            ) {
+                const latestQuestion = extractLatestQuestion(truncatedNew);
+                if (latestQuestion) {
+                    const fixBody: LlmBody = {
+                        ...getLLMConfig(),
+                        systemPrompt:
+                            "Return exactly one short factual sentence answering the question directly. No banter, no sarcasm, no roleplay, no quotes.",
+                        userMessage: `Question: ${latestQuestion}`,
+                        maxTokens: 64,
+                        temperature: 0.1,
+                    };
+                    const fixed = await streamFromLLM(
+                        fixBody,
+                        setCurrentResponse,
+                        controller.signal,
+                        getRateLimitFallbackBodies(fixBody)
+                    );
+                    const fixedLine = clampAiVoiceLine(fixed, 24, 180);
+                    if (fixedLine) normalizedResponse = fixedLine;
+                }
+            }
 
             if (normalizedResponse) {
                 const entry: ResponseEntry = {
@@ -490,6 +813,7 @@ export default function AiResponse({
                     timestamp: new Date().toISOString(),
                     model: config.model,
                     type: "analysis",
+                    screenshotDataUrl: attachedScreenshotDataUrl,
                 };
                 addResponse(entry);
                 onResponseCompleteRef.current?.(entry);
@@ -522,7 +846,7 @@ export default function AiResponse({
             // Reset gate tracking so new items arriving after analysis get a fresh evaluation
             gateCheckedIdsRef.current.clear();
         }
-    }, [addResponse, getLLMConfig]);
+    }, [addResponse, getLLMConfig, getRateLimitFallbackBodies]);
 
     /** Local heuristic gate for smart mode — no API call, instant, reliable. */
     const shouldSmartTrigger = useCallback((): boolean => {
@@ -591,7 +915,10 @@ export default function AiResponse({
         const config = sessionConfigRef.current;
         const keys = apiKeysRef.current;
         const isLmStudio = config.provider === "lmstudio";
-        const apiKey = isLmStudio ? "" : keys[config.provider as Exclude<LLMProvider, "lmstudio">];
+        const apiKey =
+            config.provider === "lmstudio"
+                ? ""
+                : keys[config.provider as Exclude<LLMProvider, "lmstudio">];
         if (!isLmStudio && !apiKey) {
             setStatusMessage(`No API key for ${config.provider}`);
             return;
@@ -625,16 +952,18 @@ export default function AiResponse({
                 devicesRef.current
             );
 
+            const primaryBody: LlmBody = {
+                systemPrompt,
+                userMessage,
+                ...getLLMConfig(),
+                maxTokens: 768,
+                temperature: 0.5,
+            };
             const fullResponse = await streamFromLLM(
-                {
-                    systemPrompt,
-                    userMessage,
-                    ...getLLMConfig(),
-                    maxTokens: 768,
-                    temperature: 0.5,
-                },
+                primaryBody,
                 setCurrentResponse,
-                controller.signal
+                controller.signal,
+                getRateLimitFallbackBodies(primaryBody)
             );
 
             if (fullResponse) {
@@ -671,7 +1000,7 @@ export default function AiResponse({
             setIsStreaming(false);
             setStreamingUserMessage("");
         }
-    }, [chatInput, addResponse, getLLMConfig]);
+    }, [chatInput, addResponse, getLLMConfig, getRateLimitFallbackBodies]);
 
     useEffect(() => {
         if (autoTimerRef.current) {
@@ -754,7 +1083,9 @@ export default function AiResponse({
         }
     }, [clearCount, clearAll]);
 
-    const hasApiKey = sessionConfig.provider === "lmstudio" || !!apiKeys[sessionConfig.provider as Exclude<LLMProvider, "lmstudio">];
+    const hasApiKey =
+        sessionConfig.provider === "lmstudio" ||
+        !!apiKeys[sessionConfig.provider as Exclude<LLMProvider, "lmstudio">];
     const plainAiVoiceOutput = sessionConfig.responseStyle === "ai-voice";
 
     return (
@@ -864,12 +1195,45 @@ export default function AiResponse({
                                     <span className="text-muted-foreground/20">/</span>
                                     <span className="truncate">{entry.model}</span>
                                 </div>
+                                {entry.type === "analysis" && entry.screenshotDataUrl && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setLightboxImage(entry.screenshotDataUrl || null)}
+                                        className="group block w-fit rounded border border-border/70 overflow-hidden hover:border-primary/50 transition-colors"
+                                        title="Open screenshot sent with this analysis"
+                                    >
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img
+                                            src={entry.screenshotDataUrl}
+                                            alt="Sent screenshot preview"
+                                            className="block h-20 w-auto max-w-[220px] object-cover"
+                                            loading="lazy"
+                                        />
+                                        <div className="px-2 py-1 text-[10px] text-muted-foreground group-hover:text-foreground/80">
+                                            Visual context sent • click to open
+                                        </div>
+                                    </button>
+                                )}
                                 <ResponseContent content={entry.content} plain={plainAiVoiceOutput} />
                             </div>
                         ))}
                     </div>
                 )}
             </div>
+
+            <Dialog open={!!lightboxImage} onOpenChange={(open) => !open && setLightboxImage(null)}>
+                <DialogContent className="max-w-[92vw] w-[1000px] p-2 sm:p-3">
+                    <DialogTitle className="sr-only">Sent screenshot preview</DialogTitle>
+                    {lightboxImage && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                            src={lightboxImage}
+                            alt="Sent screenshot full preview"
+                            className="block w-full h-auto max-h-[82vh] object-contain rounded"
+                        />
+                    )}
+                </DialogContent>
+            </Dialog>
 
             {/* Footer actions */}
             <div className="border-t border-border px-4 py-2.5 space-y-2 shrink-0">
@@ -962,3 +1326,4 @@ export default function AiResponse({
         </div>
     );
 }
+

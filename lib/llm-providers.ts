@@ -71,6 +71,7 @@ async function* streamAnthropicResponse(
             stream: true,
             temperature: request.temperature ?? 0.4,
         }),
+        signal: request.signal,
     });
 
     if (!response.ok) {
@@ -133,12 +134,27 @@ async function* streamOpenAICompatibleResponse(
     }
 
     const url = `${baseUrl}/chat/completions`;
+    // OpenAI-compatible vision payloads are supported by providers that expose
+    // chat.completions multimodal models (model capability is decided upstream).
+    const supportsImageInput =
+        request.provider === "openai" ||
+        request.provider === "lmstudio" ||
+        request.provider === "groq" ||
+        request.provider === "cerebras";
+    const userContent =
+        request.imageDataUrl && supportsImageInput
+            ? [
+                { type: "text", text: request.userMessage },
+                { type: "image_url", image_url: { url: request.imageDataUrl } },
+            ]
+            : request.userMessage;
+
     const requestBody = {
         model: request.model,
         max_tokens: request.maxTokens || 1024,
         messages: [
             { role: "system", content: request.systemPrompt },
-            { role: "user", content: request.userMessage },
+            { role: "user", content: userContent },
         ],
         stream: true,
         temperature: request.temperature ?? 0.4,
@@ -148,6 +164,7 @@ async function* streamOpenAICompatibleResponse(
         method: "POST",
         headers,
         body: JSON.stringify(requestBody),
+        signal: request.signal,
     });
 
     if (!response.ok) {
@@ -200,6 +217,7 @@ async function* streamOpenAICompatibleResponse(
     // Some Groq models occasionally emit no token text in stream mode.
     // Retry once with non-stream mode and use the final message content.
     if (!emittedAny) {
+        if (request.signal?.aborted) return;
         const nonStreamResponse = await fetch(url, {
             method: "POST",
             headers,
@@ -207,6 +225,7 @@ async function* streamOpenAICompatibleResponse(
                 ...requestBody,
                 stream: false,
             }),
+            signal: request.signal,
         });
 
         if (!nonStreamResponse.ok) {
@@ -228,6 +247,8 @@ function getBaseUrl(provider: LLMProvider, customBaseUrl?: string): string {
             return "https://api.openai.com/v1";
         case "groq":
             return "https://api.groq.com/openai/v1";
+        case "cerebras":
+            return "https://api.cerebras.ai/v1";
         case "lmstudio":
             return customBaseUrl || "http://localhost:1234/v1";
         default:
@@ -244,6 +265,7 @@ export async function* streamLLMResponse(
             break;
         case "openai":
         case "groq":
+        case "cerebras":
         case "lmstudio":
             yield* streamOpenAICompatibleResponse(
                 request,

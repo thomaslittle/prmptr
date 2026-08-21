@@ -1,6 +1,7 @@
 "use client";
 
-import { memo, useState, useCallback, useSyncExternalStore } from "react";
+import { memo, useState, useCallback, useSyncExternalStore, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { SessionConfig, SessionTemplate, SessionSummary, TriggerMode, ResponseStyle, Personality, MODELS, PERSONALITIES, LLMProvider } from "@/lib/types";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { CaretDown, CaretRight, Plus, Trash, SlidersHorizontal, PencilSimple, Star, PencilLine } from "@phosphor-icons/react";
@@ -16,6 +17,7 @@ import {
     DialogClose,
 } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
     DropdownMenu,
     DropdownMenuTrigger,
@@ -114,6 +116,7 @@ export default memo(function SessionConfigPanel({
     onCollapse,
 }: SessionConfigPanelProps) {
     const { settings } = useSettingsStore();
+    const aiVoiceReplyEnabled = !!settings.voiceReplyEnabled;
     const mounted = useSyncExternalStore(
         () => () => {},
         () => true,
@@ -155,9 +158,87 @@ export default memo(function SessionConfigPanel({
         setRenamingId(null);
     }, [renamingId, renameValue, onRenameSession]);
 
-    const availableModels = MODELS.filter((m) =>
-        configuredProviders.includes(m.provider)
+    const providersToFetch = useMemo(
+        () => Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders])),
+        [configuredProviders]
     );
+
+    const providerModelsQuery = useQuery({
+        queryKey: [
+            "provider-models",
+            providersToFetch.join("|"),
+            settings.apiKeys.anthropic || "",
+            settings.apiKeys.openai || "",
+            settings.apiKeys.groq || "",
+            settings.apiKeys.cerebras || "",
+            settings.lmstudioUrl || "",
+        ],
+        queryFn: async () => {
+            const entries = await Promise.all(
+                providersToFetch.map(async (provider) => {
+                    const body: { provider: LLMProvider; apiKey?: string; baseUrl?: string } = { provider };
+                    if (provider !== "lmstudio") {
+                        const key = settings.apiKeys[provider as Exclude<LLMProvider, "lmstudio">];
+                        if (!key) return [provider, []] as const;
+                        body.apiKey = key;
+                    } else {
+                        body.baseUrl = settings.lmstudioUrl;
+                    }
+
+                    try {
+                        const resp = await fetch("/api/provider-models", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(body),
+                        });
+                        if (!resp.ok) return [provider, []] as const;
+                        const data = (await resp.json()) as { models?: Array<string | { id?: string }> };
+                        const ids = Array.isArray(data.models)
+                            ? data.models
+                                .map((entry) => {
+                                    if (typeof entry === "string") return entry;
+                                    return typeof entry?.id === "string" ? entry.id : "";
+                                })
+                                .filter((id): id is string => !!id)
+                            : [];
+                        return [provider, ids] as const;
+                    } catch {
+                        return [provider, []] as const;
+                    }
+                })
+            );
+            const out: Partial<Record<LLMProvider, string[]>> = {};
+            for (const [provider, ids] of entries) {
+                out[provider] = [...ids];
+            }
+            return out;
+        },
+        staleTime: 60_000,
+        gcTime: 10 * 60_000,
+        refetchOnWindowFocus: false,
+    });
+    const providerModels = providerModelsQuery.data ?? {};
+
+    const availableModels = useMemo(() => {
+        const fromRemote: typeof MODELS = [];
+        for (const provider of Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders]))) {
+            const ids = providerModels[provider] ?? [];
+            if (ids.length > 0) {
+                for (const id of ids) {
+                    fromRemote.push({
+                        id,
+                        name: id,
+                        provider,
+                        speed: "fast",
+                        description: "Fetched from provider",
+                        maxTokens: 4096,
+                    });
+                }
+            }
+        }
+        if (fromRemote.length > 0) return fromRemote;
+        return MODELS.filter((m) => configuredProviders.includes(m.provider));
+    }, [configuredProviders, providerModels]);
 
     const applyTemplate = (template: SessionTemplate) => {
         const roleplayAiVoiceEnabled = template.id === "roleplay" && !!settings.voiceReplyEnabled;
@@ -224,6 +305,7 @@ export default memo(function SessionConfigPanel({
                                     >
                                         {/* Star */}
                                         <button
+                                            aria-label={session.starred ? `Unstar ${session.title}` : `Star ${session.title}`}
                                             className={cn(
                                                 "shrink-0 p-0.5 transition-colors",
                                                 session.starred
@@ -266,6 +348,7 @@ export default memo(function SessionConfigPanel({
 
                                         {/* Actions */}
                                         <button
+                                            aria-label={`Rename ${session.title}`}
                                             className="shrink-0 p-0.5 text-muted-foreground/40 hover:text-foreground transition-colors"
                                             onClick={(e) => {
                                                 e.stopPropagation();
@@ -276,6 +359,7 @@ export default memo(function SessionConfigPanel({
                                             <PencilLine weight="bold" className="size-3" />
                                         </button>
                                         <button
+                                            aria-label={`Delete ${session.title}`}
                                             className="shrink-0 p-0.5 text-muted-foreground/40 hover:text-destructive transition-colors"
                                             onClick={(e) => {
                                                 e.stopPropagation();
@@ -478,6 +562,8 @@ export default memo(function SessionConfigPanel({
                         {(["manual", "auto", "smart"] as TriggerMode[]).map((mode) => (
                             <button
                                 key={mode}
+                                aria-label={`${mode} trigger mode`}
+                                aria-pressed={config.triggerMode === mode}
                                 className={cn(
                                     "flex-1 px-2 py-1.5 text-[10px] transition-colors uppercase tracking-wide",
                                     mode !== "manual" && "border-l border-border",
@@ -507,6 +593,7 @@ export default memo(function SessionConfigPanel({
                         <div className="flex items-center gap-3">
                             <input
                                 type="range"
+                                aria-label="Auto-trigger interval in seconds"
                                 className="flex-1 accent-primary h-0.5"
                                 min="10"
                                 max="120"
@@ -532,6 +619,7 @@ export default memo(function SessionConfigPanel({
                     <div className="flex items-center gap-3">
                         <input
                             type="range"
+                            aria-label="Context size in tokens"
                             className="flex-1 accent-primary h-0.5"
                             min="2000"
                             max="16000"
@@ -564,6 +652,8 @@ export default memo(function SessionConfigPanel({
                         {PERSONALITIES.map((p) => (
                             <button
                                 key={p.id}
+                                aria-label={`${p.name} personality: ${p.description}`}
+                                aria-pressed={config.personality === p.id}
                                 className={cn(
                                     "px-2 py-1.5 text-[10px] transition-colors border border-border text-center whitespace-nowrap truncate",
                                     config.personality === p.id
@@ -609,22 +699,39 @@ export default memo(function SessionConfigPanel({
                         >
                             Detailed
                         </button>
-                        <button
-                            className={cn(
-                                "flex-1 px-3 py-1.5 text-[10px] transition-colors border-l border-border uppercase tracking-wide",
-                                config.responseStyle === "ai-voice"
-                                    ? "bg-primary text-primary-foreground"
-                                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                        <Tooltip>
+                            <TooltipTrigger
+                                render={
+                                    <div className="flex-1">
+                                        <button
+                                            className={cn(
+                                                "w-full px-3 py-1.5 text-[10px] transition-colors border-l border-border uppercase tracking-wide",
+                                                !aiVoiceReplyEnabled && "opacity-50 cursor-not-allowed hover:bg-transparent hover:text-muted-foreground",
+                                                config.responseStyle === "ai-voice"
+                                                    ? "bg-primary text-primary-foreground"
+                                                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                                            )}
+                                            onClick={() =>
+                                                aiVoiceReplyEnabled && onChange({ ...config, responseStyle: "ai-voice" as ResponseStyle })
+                                            }
+                                            disabled={!aiVoiceReplyEnabled}
+                                        >
+                                            AI Voice
+                                        </button>
+                                    </div>
+                                }
+                            />
+                            {!aiVoiceReplyEnabled && (
+                                <TooltipContent>
+                                    Enable AI Voice Reply in TTS settings first
+                                </TooltipContent>
                             )}
-                            onClick={() =>
-                                onChange({ ...config, responseStyle: "ai-voice" as ResponseStyle })
-                            }
-                        >
-                            AI Voice
-                        </button>
+                        </Tooltip>
                     </div>
                     <p className="text-[10px] text-muted-foreground/50">
-                        {config.responseStyle === "ai-voice"
+                        {!aiVoiceReplyEnabled
+                            ? "Enable AI Voice Reply in TTS settings to use AI Voice style."
+                            : config.responseStyle === "ai-voice"
                             ? "Single direct line to say in-game. No headers, no markdown."
                             : config.responseStyle === "concise"
                                 ? "Short, skimmable response."

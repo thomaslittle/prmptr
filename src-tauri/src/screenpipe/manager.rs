@@ -108,6 +108,25 @@ pub struct ScreenpipeManager {
 }
 
 impl ScreenpipeManager {
+    /// Argument flags whose values are credentials and must never be logged.
+    const SECRET_FLAGS: &'static [&'static str] = &["--deepgram-api-key"];
+
+    /// Returns a copy of `args` with secret flag values replaced by "[REDACTED]".
+    fn redact_args(args: &[String]) -> Vec<String> {
+        let mut out = Vec::with_capacity(args.len());
+        let mut redact_next = false;
+        for arg in args {
+            if redact_next {
+                out.push("[REDACTED]".to_string());
+                redact_next = false;
+                continue;
+            }
+            redact_next = Self::SECRET_FLAGS.iter().any(|f| arg == *f);
+            out.push(arg.clone());
+        }
+        out
+    }
+
     pub fn new() -> Self {
         Self {
             config: ScreenpipeConfig::default(),
@@ -215,7 +234,7 @@ impl ScreenpipeManager {
             ))?;
 
         let args = self.config.to_args();
-        let cmd_str = format!("{} {}", binary, args.join(" "));
+        let cmd_str = format!("{} {}", binary, Self::redact_args(&args).join(" "));
         log::info!("Starting screenpipe: {}", cmd_str);
 
         // Clear previous output
@@ -293,9 +312,13 @@ impl ScreenpipeManager {
                     } else {
                         format!("Screenpipe: {}", error_detail)
                     };
-                    log::warn!("Screenpipe exited: {} | cmd: {} | output: {}", exit_status, cmd, buf.text());
-                    self.process = None;
-                    return ScreenpipeStatus {
+                    log::warn!(
+                        "Screenpipe exited: {} | cmd: {} | output: {}",
+                        exit_status,
+                        cmd,
+                        buf.text()
+                    );
+                    self.process = None;                    return ScreenpipeStatus {
                         running: false,
                         healthy: false,
                         version: None,

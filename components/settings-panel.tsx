@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { LLMProvider, AppSettings, ShortcutAction, DEFAULT_SHORTCUTS } from "@/lib/types";
 import { LOCAL_SHERPA_TTS_ENDPOINT, playTtsUrl, synthesizeTts } from "@/lib/tts-client";
 import {
@@ -18,6 +19,9 @@ import {
     EyeSlash,
     Info,
     SpeakerHigh,
+    SpeakerSlash,
+    Microphone,
+    MicrophoneSlash,
     Waveform,
     Key,
     Keyboard,
@@ -28,6 +32,7 @@ import {
     Plug,
     Globe,
     MicrophoneStage,
+    Monitor,
 } from "@phosphor-icons/react";
 import ShortcutRecorder from "@/components/shortcut-recorder";
 import { Button } from "@/components/ui/button";
@@ -35,6 +40,13 @@ import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { db, getPreference, setPreference } from "@/lib/db";
+
+const SETTINGS_TAB_KEY = "settings-tab";
+const SETTINGS_TABS = ["capture", "providers", "voice", "shortcuts"] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
+
 type CloudProvider = Exclude<LLMProvider, "lmstudio">;
 
 function titleCaseLabel(s: string): string {
@@ -115,6 +127,23 @@ export default memo(function SettingsPanel({
     connectionStatus,
     statusMessage,
 }: SettingsPanelProps) {
+    const [activeTab, setActiveTab] = useState<SettingsTab>("capture");
+
+    useEffect(() => {
+        getPreference(SETTINGS_TAB_KEY).then((saved) => {
+            if (saved && SETTINGS_TABS.includes(saved as SettingsTab)) {
+                setActiveTab(saved as SettingsTab);
+            }
+        });
+    }, []);
+
+    const handleTabChange = useCallback((value: string | null) => {
+        if (value && SETTINGS_TABS.includes(value as SettingsTab)) {
+            setActiveTab(value as SettingsTab);
+            setPreference(SETTINGS_TAB_KEY, value);
+        }
+    }, []);
+
     const [apiKeyTest, setApiKeyTest] = useState<{
         provider: CloudProvider;
         status: "idle" | "testing" | "success" | "error";
@@ -125,6 +154,7 @@ export default memo(function SettingsPanel({
         anthropic: false,
         openai: false,
         groq: false,
+        cerebras: false,
     });
 
     const [showDeepgramKey, setShowDeepgramKey] = useState(false);
@@ -136,28 +166,32 @@ export default memo(function SettingsPanel({
     const [testingVoice, setTestingVoice] = useState(false);
     const [voiceTestError, setVoiceTestError] = useState<string | null>(null);
     const [availableTtsVoices, setAvailableTtsVoices] = useState<string[]>([]);
-    const [audioDevices, setAudioDevices] = useState<Array<{ name: string; is_default: boolean }>>([]);
+    const audioDevicesQuery = useQuery({
+        queryKey: ["system-audio-devices"],
+        queryFn: async () => listSystemAudioDevices(),
+        enabled: isTauri(),
+        staleTime: 60_000,
+        gcTime: 10 * 60_000,
+        refetchOnWindowFocus: false,
+    });
+    const audioDevices = audioDevicesQuery.data ?? [];
+    const audioDevicesLoading = audioDevicesQuery.isLoading || audioDevicesQuery.isFetching;
     const inputDevices = audioDevices
         .filter((d) => d.name.endsWith(" (input)"))
         .filter((d, i, arr) => arr.findIndex((x) => x.name === d.name) === i);
     const outputDevices = audioDevices
         .filter((d, i, arr) => arr.findIndex((x) => x.name === d.name) === i);
 
-    // Fetch audio devices on mount via native enumeration (no screenpipe needed)
+    // Auto-select default audio input once devices are loaded.
     useEffect(() => {
         if (!isTauri()) return;
-        listSystemAudioDevices()
-            .then((devices) => {
-                setAudioDevices(devices);
-                if (!settings.audioDevice && devices.length > 0) {
-                    const inputOnly = devices.filter((d) => d.name.endsWith(" (input)"));
-                    const defaultDevice = inputOnly.find((d) => d.is_default) || inputOnly[0];
-                    if (!defaultDevice) return;
-                    onChange({ ...settings, audioDevice: defaultDevice.name });
-                }
-            })
-            .catch(() => setAudioDevices([]));
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+        if (settings.audioDevice) return;
+        if (audioDevices.length === 0) return;
+        const inputOnly = audioDevices.filter((d) => d.name.endsWith(" (input)"));
+        const defaultDevice = inputOnly.find((d) => d.is_default) || inputOnly[0];
+        if (!defaultDevice) return;
+        onChange({ ...settings, audioDevice: defaultDevice.name });
+    }, [audioDevices, settings, onChange]);
 
     // Always use listSystemAudioDevices to stay aligned with Screenpipe device names.
 
@@ -210,13 +244,17 @@ export default memo(function SettingsPanel({
     }, []);
 
     useEffect(() => {
-        refreshGpuStatus().catch(() => {});
+        const timer = setTimeout(() => {
+            refreshGpuStatus().catch(() => {});
+        }, 0);
+        return () => clearTimeout(timer);
     }, [refreshGpuStatus]);
 
     const cloudProviders: { key: CloudProvider; label: string }[] = [
         { key: "anthropic", label: "Anthropic" },
         { key: "openai", label: "OpenAI" },
         { key: "groq", label: "Groq" },
+        { key: "cerebras", label: "Cerebras" },
     ];
     const ttsModels = [
         { value: "model", label: "model (fp32)" },
@@ -353,17 +391,41 @@ export default memo(function SettingsPanel({
 
     return (
         <div className="flex-1 overflow-y-auto min-h-0 p-5">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
-                {/* Left column */}
-                <div className="rounded-sm border border-border bg-muted/10 flex flex-col min-h-0">
-                    <div className="px-4 py-3 border-b border-border bg-background/40">
-                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Capture & Voice</p>
-                    </div>
-                    <div className="p-4 space-y-5 overflow-y-auto min-h-0 flex-1">
+            <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+                <TabsList className="w-full justify-start rounded-none border-0 bg-transparent p-0 h-auto gap-0">
+                    <TabsTrigger value="capture" className="rounded-none border-b-2 border-transparent data-active:border-primary">
+                        Capture & Voice
+                    </TabsTrigger>
+                    <TabsTrigger value="providers" className="rounded-none border-b-2 border-transparent data-active:border-primary">
+                        Providers & Models
+                    </TabsTrigger>
+                    <TabsTrigger value="voice" className="rounded-none border-b-2 border-transparent data-active:border-primary">
+                        TTS
+                    </TabsTrigger>
+                    <TabsTrigger value="shortcuts" className="rounded-none border-b-2 border-transparent data-active:border-primary">
+                        Shortcuts
+                    </TabsTrigger>
+                </TabsList>
+                <TabsContent value="capture" className="mt-4 space-y-5 overflow-y-auto min-h-0">
                     {/* Audio Devices (Tauri only) */}
                     {isTauri() && (
                         <SectionCard>
-                            <SectionLabel icon={SpeakerHigh} label="Audio Devices" />
+                            <div className="flex items-center justify-between mb-3">
+                                <SectionLabel icon={SpeakerHigh} label="Audio Devices" />
+                                <Button
+                                    variant="outline"
+                                    size="xs"
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={() => audioDevicesQuery.refetch()}
+                                    disabled={audioDevicesLoading}
+                                >
+                                    {audioDevicesLoading ? (
+                                        <CircleNotch weight="bold" className="size-3 animate-spin" />
+                                    ) : (
+                                        <ArrowCounterClockwise weight="bold" className="size-3" />
+                                    )}
+                                </Button>
+                            </div>
                             {audioDevices.length > 0 ? (
                                 <div className="space-y-2.5">
                                     {/* Input device (You) */}
@@ -371,23 +433,48 @@ export default memo(function SettingsPanel({
                                         <span className="text-[10px] text-foreground/60 font-medium mb-1 block">
                                             Input — You
                                         </span>
-                                        <Select
-                                            value={settings.audioDevice ?? ""}
-                                            onValueChange={(value) =>
-                                                onChange({ ...settings, audioDevice: value as string })
-                                            }
-                                        >
-                                            <SelectTrigger size="sm" className="w-full text-xs">
-                                                <SelectValue placeholder="Select input device" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {inputDevices.map((device) => (
+                                        <div className="flex gap-1.5 items-center">
+                                            <Select
+                                                value={settings.audioDevice ?? ""}
+                                                onValueChange={(value) =>
+                                                    onChange({ ...settings, audioDevice: value as string })
+                                                }
+                                            >
+                                                <SelectTrigger size="sm" className="flex-1 text-xs min-w-0">
+                                                    <SelectValue placeholder="Select input device" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {inputDevices.map((device) => (
                                                         <SelectItem key={device.name} value={device.name}>
                                                             {device.name}
                                                         </SelectItem>
                                                     ))}
-                                            </SelectContent>
-                                        </Select>
+                                                </SelectContent>
+                                            </Select>
+                                            <Tooltip>
+                                                <TooltipTrigger
+                                                    render={
+                                                        <Button
+                                                            size="icon-xs"
+                                                            variant={settings.muteInput ? "destructive" : "outline"}
+                                                            onClick={() =>
+                                                                onChange({ ...settings, muteInput: !settings.muteInput })
+                                                            }
+                                                            aria-label={settings.muteInput ? "Unmute input" : "Mute input"}
+                                                        >
+                                                            {settings.muteInput ? (
+                                                                <MicrophoneSlash weight="bold" className="size-3.5" />
+                                                            ) : (
+                                                                <Microphone weight="bold" className="size-3.5" />
+                                                            )}
+                                                        </Button>
+                                                    }
+                                                />
+                                                <TooltipContent>
+                                                    {settings.muteInput ? "Unmute input" : "Mute input"}
+                                                </TooltipContent>
+                                            </Tooltip>
+                                        </div>
                                     </div>
 
                                     {/* Output device (Them) */}
@@ -395,29 +482,58 @@ export default memo(function SettingsPanel({
                                         <span className="text-[10px] text-foreground/60 font-medium mb-1 block">
                                             Output — Them
                                         </span>
-                                        <Select
-                                            value={settings.outputDevice ?? ""}
-                                            onValueChange={(value) =>
-                                                onChange({ ...settings, outputDevice: value as string })
-                                            }
-                                        >
-                                            <SelectTrigger size="sm" className="w-full text-xs">
-                                                <SelectValue placeholder="Select output device" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {outputDevices.map((device) => (
+                                        <div className="flex gap-1.5 items-center">
+                                            <Select
+                                                value={settings.outputDevice ?? ""}
+                                                onValueChange={(value) =>
+                                                    onChange({ ...settings, outputDevice: value as string })
+                                                }
+                                            >
+                                                <SelectTrigger size="sm" className="flex-1 text-xs min-w-0">
+                                                    <SelectValue placeholder="Select output device" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {outputDevices.map((device) => (
                                                         <SelectItem key={device.name} value={device.name}>
                                                             {device.name}
                                                         </SelectItem>
                                                     ))}
-                                            </SelectContent>
-                                        </Select>
+                                                </SelectContent>
+                                            </Select>
+                                            <Tooltip>
+                                                <TooltipTrigger
+                                                    render={
+                                                        <Button
+                                                            size="icon-xs"
+                                                            variant={settings.muteOutput ? "destructive" : "outline"}
+                                                            onClick={() =>
+                                                                onChange({ ...settings, muteOutput: !settings.muteOutput })
+                                                            }
+                                                            aria-label={settings.muteOutput ? "Unmute output" : "Mute output"}
+                                                        >
+                                                            {settings.muteOutput ? (
+                                                                <SpeakerSlash weight="bold" className="size-3.5" />
+                                                            ) : (
+                                                                <SpeakerHigh weight="bold" className="size-3.5" />
+                                                            )}
+                                                        </Button>
+                                                    }
+                                                />
+                                                <TooltipContent>
+                                                    {settings.muteOutput ? "Unmute output" : "Mute output"}
+                                                </TooltipContent>
+                                            </Tooltip>
+                                        </div>
                                     </div>
                                 </div>
                             ) : (
-                                <p className="text-[10px] text-muted-foreground/60">
-                                    No audio devices found
-                                </p>
+                                <div className="space-y-2">
+                                    <div className="h-8 border border-border bg-muted/30 animate-pulse" />
+                                    <div className="h-8 border border-border bg-muted/30 animate-pulse" />
+                                    <p className="text-[10px] text-muted-foreground/60">
+                                        {audioDevicesLoading ? "Loading system audio devices..." : "No audio devices found"}
+                                    </p>
+                                </div>
                             )}
                             {statusMessage && connectionStatus === "disconnected" && !statusMessage.startsWith("Connection failed") && (
                                 <p className="text-[10px] text-destructive mt-1.5">
@@ -438,7 +554,7 @@ export default memo(function SettingsPanel({
                                     </span>
                                     <div className="flex gap-1">
                                         {/* <Button
-                                            variant={(settings.transcriptionMode ?? "screenpipe") === "local-whisper" ? "default" : "outline"}
+                                            variant={(settings.transcriptionMode ?? "direct-deepgram") === "local-whisper" ? "default" : "outline"}
                                             size="xs"
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "local-whisper" })}
@@ -446,7 +562,7 @@ export default memo(function SettingsPanel({
                                             Local (Experimental)
                                         </Button> */}
                                         <Button
-                                            variant={(settings.transcriptionMode ?? "screenpipe") === "direct-deepgram" ? "default" : "outline"}
+                                            variant={(settings.transcriptionMode ?? "direct-deepgram") === "direct-deepgram" ? "default" : "outline"}
                                             size="xs"
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "direct-deepgram" })}
@@ -454,7 +570,7 @@ export default memo(function SettingsPanel({
                                             Direct Deepgram
                                         </Button>
                                         <Button
-                                            variant={(settings.transcriptionMode ?? "screenpipe") === "screenpipe" ? "default" : "outline"}
+                                            variant={(settings.transcriptionMode ?? "direct-deepgram") === "screenpipe" ? "default" : "outline"}
                                             size="xs"
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "screenpipe" })}
@@ -464,7 +580,7 @@ export default memo(function SettingsPanel({
                                     </div>
                                 </div>
 
-                                {(settings.transcriptionMode ?? "screenpipe") !== "local-whisper" ? (
+                                {(settings.transcriptionMode ?? "direct-deepgram") !== "local-whisper" ? (
                                     <div className="space-y-1">
                                         <div className="flex items-center gap-1.5">
                                             <span className="text-[11px] text-foreground/70 font-medium">
@@ -500,7 +616,7 @@ export default memo(function SettingsPanel({
                                             </p>
                                         )}
                                         <p className="text-[9px] text-muted-foreground/50 mt-0.5">
-                                            {(settings.transcriptionMode ?? "screenpipe") === "screenpipe"
+                                            {(settings.transcriptionMode ?? "direct-deepgram") === "screenpipe"
                                                 ? "Uses Screenpipe realtime routing with Deepgram."
                                                 : "Uses app-native dual capture routed directly to Deepgram."}
                                         </p>
@@ -607,6 +723,30 @@ export default memo(function SettingsPanel({
                         </SectionCard>
                     )}
 
+                    <SectionCard>
+                        <SectionLabel icon={Monitor} label="Analyze Context" />
+                        <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                                <p className="text-[11px] text-foreground/70 font-medium">Include screenshot on Analyze</p>
+                                <p className="text-[9px] text-muted-foreground/60">
+                                    Sends the latest screen frame with analysis requests for extra visual context.
+                                </p>
+                            </div>
+                            <Button
+                                size="xs"
+                                variant={settings.includeScreenshotOnAnalyze ? "default" : "outline"}
+                                onClick={() =>
+                                    onChange({
+                                        ...settings,
+                                        includeScreenshotOnAnalyze: !settings.includeScreenshotOnAnalyze,
+                                    })
+                                }
+                            >
+                                {settings.includeScreenshotOnAnalyze ? "On" : "Off"}
+                            </Button>
+                        </div>
+                    </SectionCard>
+
                     {/* Screenpipe URL (web mode only) */}
                     {!isTauri() && (
                         <SectionCard>
@@ -621,16 +761,9 @@ export default memo(function SettingsPanel({
                             />
                         </SectionCard>
                     )}
+                </TabsContent>
 
-                </div>
-                </div>
-
-                {/* Right column */}
-                <div className="rounded-sm border border-border bg-muted/10 flex flex-col min-h-0">
-                    <div className="px-4 py-3 border-b border-border bg-background/40">
-                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Providers & Models</p>
-                    </div>
-                    <div className="p-4 space-y-5 overflow-y-auto min-h-0 flex-1">
+                <TabsContent value="providers" className="mt-4 space-y-5 overflow-y-auto min-h-0">
                     {/* API Keys (cloud + Deepgram) */}
                     <SectionCard>
                         <SectionLabel icon={Key} label="API Keys" />
@@ -745,15 +878,10 @@ export default memo(function SettingsPanel({
                             Start LM Studio &rarr; Load model &rarr; Enable server
                         </p>
                     </SectionCard>
-                </div>
-                </div>
 
-                {/* Third column: Shortcuts */}
-                <div className="rounded-sm border border-border bg-muted/10 flex flex-col min-h-0">
-                    <div className="px-4 py-3 border-b border-border bg-background/40">
-                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Controls</p>
-                    </div>
-                    <div className="p-4 min-h-0 space-y-5">
+                </TabsContent>
+
+                <TabsContent value="voice" className="mt-4 space-y-5 overflow-y-auto min-h-0">
                     <SectionCard>
                         <SectionLabel icon={MicrophoneStage} label="AI Voice Reply" />
                         <div className="space-y-2">
@@ -919,6 +1047,7 @@ export default memo(function SettingsPanel({
                                 <div className="flex items-center gap-3">
                                     <input
                                         type="range"
+                                        aria-label="TTS playback rate"
                                         className="flex-1 accent-primary h-0.5"
                                         min={0.5}
                                         max={2}
@@ -946,6 +1075,7 @@ export default memo(function SettingsPanel({
                                 <div className="flex items-center gap-3">
                                     <input
                                         type="range"
+                                        aria-label="TTS volume"
                                         className="flex-1 accent-primary h-0.5"
                                         min={0}
                                         max={1}
@@ -968,6 +1098,9 @@ export default memo(function SettingsPanel({
                             </p>
                         </div>
                     </SectionCard>
+                </TabsContent>
+
+                <TabsContent value="shortcuts" className="mt-4 space-y-5 overflow-y-auto min-h-0">
                     <SectionCard>
                         <SectionLabel icon={Keyboard} label="Shortcuts" />
                         <p className="text-[10px] text-muted-foreground/60 mb-3 -mt-1">
@@ -1014,9 +1147,8 @@ export default memo(function SettingsPanel({
                             Reset defaults
                         </Button>
                     </SectionCard>
-                    </div>
-                </div>
-            </div>
+                </TabsContent>
+            </Tabs>
         </div>
     );
 });

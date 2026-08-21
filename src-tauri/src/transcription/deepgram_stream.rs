@@ -16,6 +16,10 @@ pub struct DirectDeepgramConfig {
     pub input_device_name: Option<String>,
     pub output_device_name: Option<String>,
     pub api_key: String,
+    #[serde(default)]
+    pub mute_input: bool,
+    #[serde(default)]
+    pub mute_output: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -295,6 +299,16 @@ fn spawn_deepgram_worker_thread(
                 Ok(v) => v,
                 Err(e) => {
                     log::error!("[direct-deepgram:{device_type}] websocket connect failed: {e}");
+                    if running.load(Ordering::Relaxed) {
+                        let _ = app.emit(
+                            "local-transcription-status",
+                            serde_json::json!({
+                                "mode": "direct-deepgram",
+                                "running": false,
+                                "error": format!("Deepgram connection failed: {e}"),
+                            }),
+                        );
+                    }
                     return;
                 }
             };
@@ -323,9 +337,31 @@ fn spawn_deepgram_worker_thread(
                     }
                     ws_msg = read.next() => {
                         let Some(msg) = ws_msg else {
+                            if running.load(Ordering::Relaxed) {
+                                log::error!("[direct-deepgram:{device_type}] websocket stream ended unexpectedly");
+                                let _ = app.emit(
+                                    "local-transcription-status",
+                                    serde_json::json!({
+                                        "mode": "direct-deepgram",
+                                        "running": false,
+                                        "error": "Deepgram connection dropped",
+                                    }),
+                                );
+                            }
                             break;
                         };
                         let Ok(msg) = msg else {
+                            if running.load(Ordering::Relaxed) {
+                                log::error!("[direct-deepgram:{device_type}] websocket error");
+                                let _ = app.emit(
+                                    "local-transcription-status",
+                                    serde_json::json!({
+                                        "mode": "direct-deepgram",
+                                        "running": false,
+                                        "error": "Deepgram connection error",
+                                    }),
+                                );
+                            }
                             break;
                         };
                         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
@@ -333,7 +369,7 @@ fn spawn_deepgram_worker_thread(
                             let Ok(evt) = parsed else {
                                 log::debug!(
                                     "[direct-deepgram:{device_type}] non-result message: {}",
-                                    &text[..text.len().min(160)]
+                                    text.chars().take(160).collect::<String>()
                                 );
                                 continue;
                             };
@@ -438,6 +474,11 @@ impl DirectDeepgramStreamManager {
         if config.api_key.trim().is_empty() {
             return Err("Deepgram API key is required for direct mode".to_string());
         }
+        let has_input = !config.mute_input;
+        let has_output = config.output_device_name.is_some() && !config.mute_output;
+        if !has_input && !has_output {
+            return Err("At least one of input or output must be unmuted for direct capture.".to_string());
+        }
         if let Some(ref input) = config.input_device_name {
             if !input.ends_with(" (input)") {
                 return Err("Direct mode input must be an input device. Re-select 'Input - You'.".to_string());
@@ -460,25 +501,27 @@ impl DirectDeepgramStreamManager {
         self.running = running.clone();
         self.threads.clear();
 
-        let (in_tx, in_rx) = mpsc::unbounded_channel::<Vec<f32>>();
-        let input_capture = spawn_capture_thread(
-            config.input_device_name,
-            false,
-            running.clone(),
-            in_tx,
-            "input",
-        );
-        let input_worker = spawn_deepgram_worker_thread(
-            app.clone(),
-            running.clone(),
-            in_rx,
-            config.api_key.clone(),
-            "input",
-        );
-        self.threads.push(input_capture);
-        self.threads.push(input_worker);
+        if !config.mute_input {
+            let (in_tx, in_rx) = mpsc::unbounded_channel::<Vec<f32>>();
+            let input_capture = spawn_capture_thread(
+                config.input_device_name,
+                false,
+                running.clone(),
+                in_tx,
+                "input",
+            );
+            let input_worker = spawn_deepgram_worker_thread(
+                app.clone(),
+                running.clone(),
+                in_rx,
+                config.api_key.clone(),
+                "input",
+            );
+            self.threads.push(input_capture);
+            self.threads.push(input_worker);
+        }
 
-        if config.output_device_name.is_some() {
+        if config.output_device_name.is_some() && !config.mute_output {
             let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<f32>>();
             let output_is_output = config
                 .output_device_name
@@ -513,3 +556,4 @@ impl DirectDeepgramStreamManager {
         }
     }
 }
+

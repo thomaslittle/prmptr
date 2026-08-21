@@ -39,4 +39,5 @@ whisper-rs-sys = "0.14.1"
 sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries", "tts"] }
 libc = "0.2"
 open = "5"
+url = "2"
 base64 = "0.22"

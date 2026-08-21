@@ -62,7 +62,7 @@ export interface ScreenpipeResponse {
 // LLM Types
 // ============================================================
 
-export type LLMProvider = "anthropic" | "openai" | "groq" | "lmstudio";
+export type LLMProvider = "anthropic" | "openai" | "groq" | "lmstudio" | "cerebras";
 
 export interface ModelDef {
     id: string;
@@ -78,12 +78,14 @@ export interface ModelDef {
 export interface LLMRequest {
     systemPrompt: string;
     userMessage: string;
+    imageDataUrl?: string;
     model: string;
     provider: LLMProvider;
     apiKey: string;
     baseUrl?: string;
     maxTokens?: number;
     temperature?: number;
+    signal?: AbortSignal;
 }
 
 export interface StreamToken {
@@ -165,6 +167,7 @@ export interface ResponseEntry {
     model: string;
     type?: "analysis" | "chat";
     userMessage?: string;
+    screenshotDataUrl?: string;
 }
 
 export interface SessionSummary {
@@ -230,7 +233,10 @@ export interface AppSettings {
     ttsVolume?: number;
     audioDevice?: string;
     outputDevice?: string;
+    muteInput?: boolean;
+    muteOutput?: boolean;
     enableVision?: boolean;
+    includeScreenshotOnAnalyze?: boolean;
     deepgramApiKey?: string;
     transcriptionMode?: "screenpipe" | "local-whisper" | "direct-deepgram";
     localPreferGpu?: boolean;
@@ -238,6 +244,7 @@ export interface AppSettings {
         anthropic?: string;
         openai?: string;
         groq?: string;
+        cerebras?: string;
     };
     defaultProvider: LLMProvider;
     defaultModel: string;
@@ -256,6 +263,15 @@ export const MODELS: ModelDef[] = [
         provider: "lmstudio",
         speed: "fast",
         description: "Uses whatever model is loaded in LM Studio",
+        maxTokens: 4096,
+    },
+    // Cerebras
+    {
+        id: "llama-3.1-8b",
+        name: "Llama 3.1 8B (Cerebras)",
+        provider: "cerebras",
+        speed: "blazing",
+        description: "Low-cost, very fast",
         maxTokens: 4096,
     },
     // Anthropic

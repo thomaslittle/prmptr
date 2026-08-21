@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -21,6 +21,11 @@ import { cn } from "@/lib/utils";
 interface ContextEditorProps {
     markdown: string;
     onChange: (markdown: string) => void;
+}
+
+function getMarkdown(editor: Editor): string {
+    const storage = editor.storage as unknown as Record<string, { getMarkdown?: () => string } | undefined>;
+    return storage.markdown?.getMarkdown?.() ?? "";
 }
 
 export default function ContextEditor({ markdown, onChange }: ContextEditorProps) {
@@ -46,7 +51,7 @@ export default function ContextEditor({ markdown, onChange }: ContextEditorProps
             },
         },
         onUpdate: ({ editor: e }) => {
-            const md = (e.storage as Record<string, any>).markdown.getMarkdown();
+            const md = getMarkdown(e);
             onChange(md);
         },
     });
@@ -54,7 +59,7 @@ export default function ContextEditor({ markdown, onChange }: ContextEditorProps
     // Sync external markdown changes (e.g. template applied)
     useEffect(() => {
         if (!editor) return;
-        const current = (editor.storage as Record<string, any>).markdown.getMarkdown();
+        const current = getMarkdown(editor);
         if (current !== markdown) {
             editor.commands.setContent(markdown);
         }

@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { isTauri } from "@/lib/tauri";
 import { ShortcutAction } from "@/lib/types";
-import { parseShortcut, matchesKeyboardEvent } from "@/lib/shortcuts";
+import { parseShortcut, matchesKeyboardEvent, toTauriGlobalShortcut } from "@/lib/shortcuts";
 
 interface ShortcutHandlers {
     onAnalyze?: () => void;
@@ -18,14 +18,55 @@ const ACTION_TO_HANDLER: Record<ShortcutAction, keyof ShortcutHandlers> = {
     settingsPanel: "onSettingsPanel",
 };
 
+function normalizeShortcutId(value: string): string {
+    const rawParts = value
+        .toLowerCase()
+        .split("+")
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+    const modifiers = new Set<string>();
+    let key = "";
+
+    for (const part of rawParts) {
+        const p = part
+            .replace(/commandorcontrol/g, "ctrl")
+            .replace(/^control$/, "ctrl")
+            .replace(/^cmd$/, "meta")
+            .replace(/^command$/, "meta")
+            .replace(/^super$/, "meta");
+
+        if (p === "ctrl" || p === "shift" || p === "alt" || p === "meta") {
+            modifiers.add(p);
+            continue;
+        }
+
+        if (p.startsWith("key") && p.length === 4) {
+            key = p.slice(3); // keyx -> x
+            continue;
+        }
+        if (p.startsWith("digit") && p.length === 6) {
+            key = p.slice(5); // digit2 -> 2
+            continue;
+        }
+
+        key = p;
+    }
+
+    const orderedMods = ["ctrl", "shift", "alt", "meta"].filter((m) => modifiers.has(m));
+    return [...orderedMods, key].filter(Boolean).join("+");
+}
+
 export function useShortcutManager(handlers: ShortcutHandlers) {
     const { settings } = useSettingsStore();
     const handlersRef = useRef(handlers);
-    handlersRef.current = handlers;
+    useEffect(() => {
+        handlersRef.current = handlers;
+    });
 
     const shortcuts = settings.shortcuts;
 
-    // Tauri mode: register OS-level global shortcuts via JS plugin API
+    // Tauri mode: register OS-level global shortcuts (work when app is not focused)
     useEffect(() => {
         if (!isTauri()) return;
 
@@ -41,19 +82,29 @@ export function useShortcutManager(handlers: ShortcutHandlers) {
 
                 await unregisterAll();
 
+                const tauriShortcuts: string[] = [];
+                const shortcutToAction: Record<string, ShortcutAction> = {};
+
                 for (const [action, binding] of Object.entries(shortcuts)) {
                     if (cancelled) return;
-                    const handlerKey = ACTION_TO_HANDLER[action as ShortcutAction];
-                    try {
-                        await register(binding.keys, () => {
-                            handlersRef.current[handlerKey]?.();
-                        });
-                    } catch {
-                        // Shortcut may be invalid or already taken by OS
-                    }
+                    const tauriFormat = toTauriGlobalShortcut(binding.keys);
+                    tauriShortcuts.push(tauriFormat);
+                    shortcutToAction[normalizeShortcutId(tauriFormat)] = action as ShortcutAction;
                 }
-            } catch {
-                // Plugin not available
+
+                if (tauriShortcuts.length > 0) {
+                    await register(tauriShortcuts, (event) => {
+                        const state = String(event.state).toLowerCase();
+                        if (state !== "pressed") return;
+                        const action = shortcutToAction[normalizeShortcutId(event.shortcut)];
+                        if (action) {
+                            const handlerKey = ACTION_TO_HANDLER[action];
+                            handlersRef.current[handlerKey]?.();
+                        }
+                    });
+                }
+            } catch (err) {
+                console.warn("Global shortcut registration failed:", err);
             }
         })();
 
