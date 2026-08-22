@@ -15,6 +15,7 @@ import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useSessionStore } from "@/lib/stores/session-store";
 import { buildSystemPrompt, buildUserMessage, buildChatPrompt, truncateFeedItems, DeviceNames } from "@/lib/prompt-builder";
 import { selectBestSpokenLine } from "@/lib/spoken-line";
+import { normalizeGluedMarkdown } from "@/lib/markdown-normalize";
 import { isTauri, captureNativeScreenshotViaTauri } from "@/lib/tauri";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
@@ -464,12 +465,13 @@ function ResponseContentInner({ content, plain = false }: { content: string; pla
         );
     }
 
-    const sections = parseResponseContent(content);
+    const normalized = normalizeGluedMarkdown(content);
+    const sections = parseResponseContent(normalized);
 
     if (sections.length === 0) {
         return (
             <div className="prose-response">
-                <Markdown>{content}</Markdown>
+                <Markdown>{normalized}</Markdown>
             </div>
         );
     }

@@ -36,6 +36,7 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
+import { zenModelDisplayName, isFreeZenModel } from "@/lib/zen-models";
 
 const TEMPLATES: SessionTemplate[] = [
     {
@@ -171,6 +172,7 @@ export default memo(function SessionConfigPanel({
             settings.apiKeys.openai || "",
             settings.apiKeys.groq || "",
             settings.apiKeys.cerebras || "",
+            settings.apiKeys.zen || "",
             settings.lmstudioUrl || "",
         ],
         queryFn: async () => {
@@ -220,24 +222,42 @@ export default memo(function SessionConfigPanel({
     const providerModels = providerModelsQuery.data ?? {};
 
     const availableModels = useMemo(() => {
-        const fromRemote: typeof MODELS = [];
-        for (const provider of Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders]))) {
-            const ids = providerModels[provider] ?? [];
-            if (ids.length > 0) {
-                for (const id of ids) {
-                    fromRemote.push({
-                        id,
-                        name: id,
-                        provider,
-                        speed: "fast",
-                        description: "Fetched from provider",
-                        maxTokens: 4096,
-                    });
-                }
+        const providers = Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders]));
+        const seen = new Set<string>();
+        const merged: typeof MODELS = [];
+
+        // Remote models first (live from each provider that answered)
+        for (const provider of providers) {
+            for (const id of providerModels[provider] ?? []) {
+                const key = `${provider}:${id}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const isZen = provider === "zen";
+                const name = isZen ? zenModelDisplayName(id) : id;
+                const free = isZen && isFreeZenModel(id);
+                merged.push({
+                    id,
+                    name: free ? `${name} · free` : name,
+                    provider,
+                    speed: "fast",
+                    description: "Fetched from provider",
+                    maxTokens: 4096,
+                });
             }
         }
-        if (fromRemote.length > 0) return fromRemote;
-        return MODELS.filter((m) => configuredProviders.includes(m.provider));
+
+        // Static catalog entries for providers that returned nothing
+        // (e.g. LM Studio not running, or a fetch failure) so their
+        // defaults don't vanish from the dropdown.
+        for (const m of MODELS) {
+            if (!providers.includes(m.provider)) continue;
+            const key = `${m.provider}:${m.id}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                merged.push(m);
+            }
+        }
+        return merged;
     }, [configuredProviders, providerModels]);
 
     const applyTemplate = (template: SessionTemplate) => {
@@ -252,12 +272,24 @@ export default memo(function SessionConfigPanel({
         });
     };
 
-    const groupedModels = availableModels.reduce<Record<string, typeof availableModels>>((acc, model) => {
-        const key = model.provider;
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(model);
-        return acc;
-    }, {});
+    const groupedModels = useMemo(() => {
+        const groups = availableModels.reduce<Record<string, typeof availableModels>>((acc, model) => {
+            const key = model.provider;
+            if (!acc[key]) acc[key] = [];
+            acc[key].push(model);
+            return acc;
+        }, {});
+        // Free tier first, then alphabetical — keeps the 60+ model Zen list scannable
+        if (groups.zen) {
+            groups.zen.sort((a, b) => {
+                const aFree = isFreeZenModel(a.id) ? 0 : 1;
+                const bFree = isFreeZenModel(b.id) ? 0 : 1;
+                if (aFree !== bFree) return aFree - bFree;
+                return a.name.localeCompare(b.name);
+            });
+        }
+        return groups;
+    }, [availableModels]);
 
     const currentSession = sessions.find((s) => s.id === currentSessionId);
     const sessionTitle = currentSession?.title ?? "New Session";
@@ -534,7 +566,11 @@ export default memo(function SessionConfigPanel({
                                 {Object.entries(groupedModels).map(([provider, models]) => (
                                     <SelectGroup key={provider}>
                                         <SelectLabel>
-                                            {provider === "lmstudio" ? "LM Studio" : provider.charAt(0).toUpperCase() + provider.slice(1)}
+                                            {provider === "lmstudio"
+                                                ? "LM Studio"
+                                                : provider === "zen"
+                                                    ? "OpenCode Zen"
+                                                    : provider.charAt(0).toUpperCase() + provider.slice(1)}
                                         </SelectLabel>
                                         {models.map((model) => (
                                             <SelectItem key={model.id} value={model.id}>

@@ -11,7 +11,8 @@ impl SpeechDetector {
     pub fn new(model_path: &str) -> Result<Self, String> {
         let config = SileroVadConfig {
             model: model_path.to_string(),
-            threshold: 0.5,
+            // Slightly below default so soft sentence onsets still trigger.
+            threshold: 0.45,
             // Slightly shorter pause requirement so turns split faster.
             min_silence_duration: 0.3,
             min_speech_duration: 0.2,

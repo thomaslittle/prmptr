@@ -204,6 +204,12 @@ pub async fn validate_api_key(
         )),
         "groq" => Box::new(crate::llm::groq::new_groq_client(api_key)),
         "cerebras" => Box::new(crate::llm::cerebras::new_cerebras_client(api_key)),
+        // OpenCode Zen exposes an OpenAI-compatible /v1 surface.
+        "zen" => Box::new(crate::llm::openai::OpenAICompatibleClient::new(
+            Some(api_key),
+            "https://opencode.ai/zen/v1".to_string(),
+            "zen".to_string(),
+        )),
         "lmstudio" => Box::new(crate::llm::lmstudio::new_lmstudio_client(base_url)),
         _ => return Err(format!("Unknown provider: {}", provider)),
     };
@@ -328,12 +334,14 @@ pub async fn start_local_transcription(
     output_device_name: Option<String>,
     whisper_model_id: Option<String>,
     prefer_gpu: Option<bool>,
+    use_moonshine: Option<bool>,
 ) -> Result<(), String> {
     let config = crate::transcription::whisper_stream::LocalWhisperConfig {
         input_device_name,
         output_device_name,
         whisper_model_id,
         prefer_gpu: prefer_gpu.unwrap_or(false),
+        use_moonshine: use_moonshine.unwrap_or(false),
         ..Default::default()
     };
 
@@ -425,10 +433,19 @@ pub struct LocalGpuStatus {
     pub cuda_backend_available: bool,
     pub can_use_gpu: bool,
     pub message: String,
+    /// Human-readable toolkit identity, e.g. "v13.3 (via CUDA_PATH)".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cuda_toolkit_version: Option<String>,
+    /// Actionable setup hints when GPU is not fully usable.
+    #[serde(default)]
+    pub hints: Vec<String>,
 }
 
 #[tauri::command]
 pub fn get_local_transcription_gpu_status() -> Result<LocalGpuStatus, String> {
+    // Modern whisper.cpp prints per-backend sections, e.g.
+    //   "WHISPER : ... | cpu : A = 1 | cuda : F16 = 1 | "
+    // The "cuda :" section only exists when built with GGML_CUDA=ON.
     fn whisper_cuda_backend_available() -> bool {
         unsafe {
             let ptr = whisper_rs_sys::whisper_print_system_info();
@@ -436,72 +453,195 @@ pub fn get_local_transcription_gpu_status() -> Result<LocalGpuStatus, String> {
                 return false;
             }
             let info = std::ffi::CStr::from_ptr(ptr).to_string_lossy().to_lowercase();
-            info.contains("cuda = 1") || info.contains("cuda: 1")
+            info.split('|')
+                .any(|segment| segment.trim().starts_with("cuda"))
         }
     }
 
+    // ── 1. NVIDIA GPU via driver tooling ──
     let nvidia_gpu_detected = std::process::Command::new("nvidia-smi")
         .arg("-L")
         .output()
         .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
         .unwrap_or(false);
 
-    #[cfg(windows)]
-    let cuda_toolkit_installed = {
-        let env_path = std::env::var("CUDA_PATH").ok();
-        let env_exists = env_path
-            .as_ref()
-            .map(|p| std::path::Path::new(p).exists())
-            .unwrap_or(false);
-        let cuda_root = std::path::Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA");
-        let default_exists = cuda_root.exists();
-        let versioned_nvcc_exists = std::fs::read_dir(cuda_root)
-            .ok()
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|entry| entry.path().join("bin").join("nvcc.exe"))
-                    .any(|nvcc| nvcc.exists())
-            })
-            .unwrap_or(false);
-        let nvcc_on_path = std::process::Command::new("cmd")
+    // ── 2. NVIDIA driver API present (what whisper.cpp actually loads at runtime) ──
+    #[cfg(target_os = "windows")]
+    let nvidia_driver_api_present = unsafe {
+        extern "system" {
+            fn LoadLibraryA(name: *const u8) -> isize;
+        }
+        let handle = LoadLibraryA(b"nvcuda.dll\0".as_ptr());
+        handle != 0
+    };
+    #[cfg(not(target_os = "windows"))]
+    let nvidia_driver_api_present = std::path::Path::new("/usr/lib/x86_64-linux-gnu/libcuda.so").exists()
+        || std::path::Path::new("/usr/lib/wsl/lib/libcuda.so").exists();
+
+    // ── 3. Toolkit discovery — many install layouts exist, check them all ──
+    let mut hints: Vec<String> = Vec::new();
+    let mut toolkit_candidates: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+    // 3a. CUDA_PATH (the canonical installer-set variable)
+    if let Ok(p) = std::env::var("CUDA_PATH") {
+        let path = std::path::PathBuf::from(&p);
+        if path.join("bin").join("nvcc.exe").exists()
+            || path.join("version.json").exists()
+            || path.exists()
+        {
+            toolkit_candidates.push(("CUDA_PATH".to_string(), path));
+        }
+    }
+
+    // 3b. Per-version variables set by some installers: CUDA_PATH_V13_1, ...
+    for (key, value) in std::env::vars() {
+        if key.starts_with("CUDA_PATH_V") && !value.trim().is_empty() {
+            let path = std::path::PathBuf::from(&value);
+            if path.exists() && !toolkit_candidates.iter().any(|(_, p)| *p == path) {
+                toolkit_candidates.push((key.clone(), path));
+            }
+        }
+    }
+
+    // 3c. Standard install roots — enumerate versioned subdirs that contain nvcc
+    #[cfg(target_os = "windows")]
+    let default_roots = [
+        std::path::PathBuf::from("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA"),
+        std::path::PathBuf::from("C:\\NVIDIA GPU Computing Toolkit\\CUDA"),
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let default_roots = [
+        std::path::PathBuf::from("/usr/local/cuda"),
+        std::path::PathBuf::from("/opt/cuda"),
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        for root in default_roots.iter() {
+            if let Ok(entries) = std::fs::read_dir(root) {
+                for entry in entries.flatten() {
+                    let dir = entry.path();
+                    let nvcc = dir.join("bin").join("nvcc.exe");
+                    if nvcc.exists() && !toolkit_candidates.iter().any(|(_, p)| *p == dir) {
+                        toolkit_candidates.push((
+                            format!("default-install ({})", dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                            dir,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    for root in default_roots.iter() {
+        if root.join("bin").join("nvcc").exists() || root.exists() {
+            toolkit_candidates.push(("default-install".to_string(), root.to_path_buf()));
+        }
+    }
+
+    // 3d. nvcc anywhere on PATH (custom/conda installs)
+    let nvcc_on_path = if cfg!(windows) {
+        std::process::Command::new("cmd")
             .args(["/C", "where", "nvcc"])
             .output()
             .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false);
-
-        env_exists || default_exists || versioned_nvcc_exists || nvcc_on_path
-    };
-
-    #[cfg(not(windows))]
-    let cuda_toolkit_installed = std::path::Path::new("/usr/local/cuda").exists()
-        || std::path::Path::new("/opt/cuda").exists();
-
-    let cuda_backend_available = whisper_cuda_backend_available();
-    // Runtime GPU use is gated by NVIDIA GPU presence + whisper CUDA backend availability.
-    // Toolkit presence is reported for diagnostics, but should not hard-block runtime detection.
-    let can_use_gpu = nvidia_gpu_detected && cuda_backend_available;
-
-    let message = if can_use_gpu {
-        "GPU acceleration is available for local transcription.".to_string()
-    } else if !nvidia_gpu_detected {
-        "No NVIDIA GPU detected. Local transcription will run on CPU.".to_string()
-    } else if !cuda_backend_available {
-        "NVIDIA GPU detected, but CUDA backend is not active in this app runtime/build. Recheck, and if it still fails, rebuild/restart with CUDA-enabled whisper runtime."
-            .to_string()
-    } else if !cuda_toolkit_installed {
-        "NVIDIA GPU detected, but CUDA Toolkit was not found. GPU may still work via driver runtime, but installing Toolkit is recommended."
-            .to_string()
+            .unwrap_or(false)
     } else {
-        "GPU acceleration is unavailable in the current environment.".to_string()
+        std::process::Command::new("sh")
+            .args(["-c", "which nvcc"])
+            .output()
+            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false)
     };
+
+    let cuda_toolkit_installed = !toolkit_candidates.is_empty() || nvcc_on_path;
+    let primary_toolkit = toolkit_candidates
+        .first()
+        .map(|(label, path)| {
+            let version = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if version.starts_with('v') {
+                format!("{} (via {})", version, label)
+            } else {
+                format!("{} ({})", label, path.display())
+            }
+        });
+
+    // ── 4. Was THIS app binary compiled with CUDA support? ──
+    // Modern whisper.cpp prints per-backend sections, e.g.
+    //   "WHISPER : ... | cpu : A = 1 | cuda : F16 = 1 | "
+    // The "cuda :" section only exists when built with GGML_CUDA=ON.
+    let cuda_backend_available = whisper_cuda_backend_available();
+
+    let can_use_gpu = nvidia_gpu_detected && nvidia_driver_api_present && cuda_backend_available;
+
+    // ── 5. Actionable diagnostics ──
+    if can_use_gpu {
+        hints.push(format!(
+            "GPU acceleration active. Toolkit: {}. Toggle 'Use GPU' and restart transcription to apply.",
+            primary_toolkit.clone().unwrap_or_else(|| "detected".to_string())
+        ));
+    } else {
+        if !nvidia_gpu_detected {
+            hints.push(
+                "No NVIDIA GPU found (nvidia-smi). GPU mode needs an NVIDIA card; CPU mode works everywhere.".to_string(),
+            );
+        } else if !nvidia_driver_api_present {
+            hints.push(
+                "NVIDIA GPU found but the driver API (nvcuda.dll) is unavailable — update your NVIDIA display driver.".to_string(),
+            );
+        }
+        if !cuda_toolkit_installed {
+            hints.push(
+                "No CUDA toolkit found. Install it from https://developer.nvidia.com/cuda-downloads, then fully close and restart this app (env vars are only read at launch).".to_string(),
+            );
+        }
+        if nvidia_gpu_detected && cuda_toolkit_installed && !cuda_backend_available {
+            hints.push(
+                "Toolkit + GPU detected, but this app's speech engine was built without CUDA support (or predates the install). Fully close and restart the app; if it persists, rebuild: delete src-tauri/target and run npm run tauri dev.".to_string(),
+            );
+        }
+        if cuda_toolkit_installed && !std::env::var("CUDA_PATH").map(|p| !p.trim().is_empty()).unwrap_or(false) {
+            hints.push(
+                "Tip: set the CUDA_PATH user environment variable to your toolkit folder (e.g. C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.3), then restart the app.".to_string(),
+            );
+        }
+        if toolkit_candidates.len() > 1 {
+            hints.push(format!(
+                "Multiple CUDA toolkits detected ({}). Builds use CUDA_PATH — make sure it points at the newest one.",
+                toolkit_candidates.len()
+            ));
+        }
+    }
+
+    log::info!(
+        "[gpu-status] gpu={} driver_api={} toolkit={} backend={} can_use={}",
+        nvidia_gpu_detected,
+        nvidia_driver_api_present,
+        cuda_toolkit_installed,
+        cuda_backend_available,
+        can_use_gpu
+    );
 
     Ok(LocalGpuStatus {
         nvidia_gpu_detected,
         cuda_toolkit_installed,
         cuda_backend_available,
         can_use_gpu,
-        message,
+        message: if can_use_gpu {
+            "GPU acceleration is available for local transcription.".to_string()
+        } else if !nvidia_gpu_detected {
+            "No NVIDIA GPU detected. Local transcription will run on CPU.".to_string()
+        } else if !cuda_backend_available {
+            "NVIDIA GPU detected, but this app's speech engine is not CUDA-enabled. Restart the app; if it still fails, see the tips below."
+                .to_string()
+        } else {
+            "NVIDIA driver issue detected. Update your NVIDIA display driver and restart the app.".to_string()
+        },
+        cuda_toolkit_version: primary_toolkit,
+        hints,
     })
 }
 
@@ -1085,6 +1225,149 @@ fn emit_whisper_model_progress(
 pub fn list_whisper_models(app: tauri::AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
     Ok(crate::transcription::model_manager::list_whisper_models(&app))
 }
+
+// ──────────────────────────── Moonshine Commands ────────────────────────────
+
+#[tauri::command]
+pub fn is_moonshine_model_installed(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(crate::transcription::model_manager::is_moonshine_installed(&app))
+}
+
+#[tauri::command]
+pub async fn download_moonshine_model(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use crate::transcription::model_manager::{
+        moonshine_install_root, MOONSHINE_ARCHIVE_FILENAME, MOONSHINE_ARCHIVE_URL, MOONSHINE_DIR_NAME,
+    };
+    use futures_util::StreamExt;
+
+    if crate::transcription::model_manager::is_moonshine_installed(&app) {
+        return Ok(());
+    }
+
+    let root_dir = moonshine_install_root(&app)?;
+    std::fs::create_dir_all(&root_dir).map_err(|e| format!("Failed to create models dir: {e}"))?;
+    let archive_path = root_dir.join(MOONSHINE_ARCHIVE_FILENAME);
+
+    emit_model_download_progress(&app, "moonshine-base", "Starting download...", 0, 0, None);
+
+    // Stream to disk so we can report progress (archive is ~200 MB).
+    let client = reqwest::Client::builder()
+        .user_agent("prmptr-moonshine-downloader")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let response = client
+        .get(MOONSHINE_ARCHIVE_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Download failed with status {}",
+            response.status()
+        ));
+    }
+
+    let total_size = response.content_length();
+    let mut downloaded: u64 = 0;
+    let mut file = std::fs::File::create(&archive_path)
+        .map_err(|e| format!("Failed to create archive file: {e}"))?;
+
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download stream error: {e}"))?;
+        use std::io::Write;
+        file.write_all(&chunk)
+            .map_err(|e| format!("Failed to write archive: {e}"))?;
+        downloaded += chunk.len() as u64;
+
+        const MAX_MOONSHINE_BYTES: u64 = 1024 * 1024 * 1024; // 1 GB sanity cap
+        if downloaded > MAX_MOONSHINE_BYTES {
+            drop(file);
+            let _ = std::fs::remove_file(&archive_path);
+            return Err("Download exceeded size limit — aborting".to_string());
+        }
+
+        let pct = match total_size {
+            Some(t) if t > 0 => ((downloaded as f64 / t as f64) * 100.0) as u8,
+            _ => 0,
+        };
+        if downloaded % (8 * 1024 * 1024) < chunk.len() as u64 + 1 {
+            emit_model_download_progress(
+                &app,
+                "moonshine-base",
+                "Downloading...",
+                pct.min(99),
+                downloaded,
+                total_size,
+            );
+        }
+    }
+    drop(file);
+
+    emit_model_download_progress(&app, "moonshine-base", "Extracting...", 99, downloaded, total_size);
+
+    // Extract with the system tar (same approach as the Kokoro TTS assets).
+    let archive_path_clone = archive_path.clone();
+    let root_dir_clone = root_dir.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let status = std::process::Command::new("tar")
+            .arg("-xjf")
+            .arg(&archive_path_clone)
+            .arg("-C")
+            .arg(&root_dir_clone)
+            .status()
+            .map_err(|e| format!("Failed to run tar for Moonshine extraction: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "Failed to extract Moonshine model archive (tar exit code: {status})"
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Failed waiting for extraction task: {e}"))??;
+
+    let installed =
+        crate::transcription::model_manager::resolve_moonshine_model_dir(&app).is_ok();
+
+    // Keep things tidy either way.
+    let _ = std::fs::remove_file(&archive_path);
+
+    if !installed {
+        return Err(format!(
+            "Moonshine archive extracted but model files were not found in {}/{MOONSHINE_DIR_NAME}",
+            root_dir.display()
+        ));
+    }
+
+    emit_model_download_progress(&app, "moonshine-base", "Done", 100, downloaded, total_size);
+    log::info!("Moonshine model installed at {}\\{}", root_dir.display(), MOONSHINE_DIR_NAME);
+    Ok(())
+}
+
+fn emit_model_download_progress(
+    app: &tauri::AppHandle,
+    model_id: &str,
+    stage: &str,
+    percent: u8,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let _ = app.emit(
+        "whisper-model-download-progress",
+        WhisperModelDownloadProgress {
+            model_id: model_id.to_string(),
+            stage: stage.to_string(),
+            percent,
+            downloaded_bytes,
+            total_bytes,
+        },
+    );
+}
+
 
 #[tauri::command]
 pub fn get_selected_whisper_model(app: tauri::AppHandle) -> Result<String, String> {

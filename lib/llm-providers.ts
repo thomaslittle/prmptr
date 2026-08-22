@@ -56,13 +56,26 @@ function extractAnthropicContent(payload: unknown): string {
 async function* streamAnthropicResponse(
     request: LLMRequest
 ): AsyncGenerator<string> {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    // Zen exposes Anthropic-protocol models under its own /messages route.
+    const isZen = request.provider === "zen";
+    const url = isZen
+        ? `${getBaseUrl("zen", request.baseUrl)}/messages`
+        : "https://api.anthropic.com/v1/messages";
+
+    const headers: Record<string, string> = {
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    };
+    if (isZen) {
+        headers["x-api-key"] = request.apiKey;
+        headers["Authorization"] = `Bearer ${request.apiKey}`;
+    } else {
+        headers["x-api-key"] = request.apiKey;
+    }
+
+    const response = await fetch(url, {
         method: "POST",
-        headers: {
-            "x-api-key": request.apiKey,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
+        headers,
         body: JSON.stringify({
             model: request.model,
             max_tokens: request.maxTokens || 1024,
@@ -140,7 +153,8 @@ async function* streamOpenAICompatibleResponse(
         request.provider === "openai" ||
         request.provider === "lmstudio" ||
         request.provider === "groq" ||
-        request.provider === "cerebras";
+        request.provider === "cerebras" ||
+        request.provider === "zen";
     const userContent =
         request.imageDataUrl && supportsImageInput
             ? [
@@ -249,6 +263,8 @@ function getBaseUrl(provider: LLMProvider, customBaseUrl?: string): string {
             return "https://api.groq.com/openai/v1";
         case "cerebras":
             return "https://api.cerebras.ai/v1";
+        case "zen":
+            return customBaseUrl || "https://opencode.ai/zen/v1";
         case "lmstudio":
             return customBaseUrl || "http://localhost:1234/v1";
         default:
@@ -262,6 +278,18 @@ export async function* streamLLMResponse(
     switch (request.provider) {
         case "anthropic":
             yield* streamAnthropicResponse(request);
+            break;
+        case "zen":
+            // Zen serves Claude/Qwen families over the Anthropic /messages
+            // protocol; everything else speaks OpenAI chat completions.
+            if (/^(claude|qwen)/i.test(request.model)) {
+                yield* streamAnthropicResponse(request);
+            } else {
+                yield* streamOpenAICompatibleResponse(
+                    request,
+                    getBaseUrl("zen", request.baseUrl)
+                );
+            }
             break;
         case "openai":
         case "groq":

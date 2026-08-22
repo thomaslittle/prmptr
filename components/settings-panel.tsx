@@ -13,7 +13,11 @@ import {
     getLocalTranscriptionGpuStatus,
     LocalGpuStatus,
     openExternalUrl,
+    isMoonshineModelInstalled,
+    downloadMoonshineModel,
+    onWhisperModelDownloadProgress,
 } from "@/lib/tauri";
+import type { WhisperModelDownloadProgress } from "@/lib/tauri";
 import {
     Eye,
     EyeSlash,
@@ -155,12 +159,16 @@ export default memo(function SettingsPanel({
         openai: false,
         groq: false,
         cerebras: false,
+        zen: false,
     });
 
     const [showDeepgramKey, setShowDeepgramKey] = useState(false);
     const [showTtsKey, setShowTtsKey] = useState(false);
     const [localGpuStatus, setLocalGpuStatus] = useState<LocalGpuStatus | null>(null);
     const [checkingGpuStatus, setCheckingGpuStatus] = useState(false);
+    const [moonshineInstalled, setMoonshineInstalled] = useState(false);
+    const [moonshineDownloading, setMoonshineDownloading] = useState(false);
+    const [moonshineProgress, setMoonshineProgress] = useState<WhisperModelDownloadProgress | null>(null);
 
     const [lmStudioStatus, setLmStudioStatus] = useState<"idle" | "testing" | "connected" | "error">("idle");
     const [testingVoice, setTestingVoice] = useState(false);
@@ -250,11 +258,36 @@ export default memo(function SettingsPanel({
         return () => clearTimeout(timer);
     }, [refreshGpuStatus]);
 
+    // Moonshine model install state + download progress subscription
+    useEffect(() => {
+        if (!isTauri()) return;
+        let alive = true;
+        isMoonshineModelInstalled()
+            .then((installed) => {
+                if (alive) setMoonshineInstalled(installed);
+            })
+            .catch(() => {});
+        let unlisten: (() => void) | null = null;
+        onWhisperModelDownloadProgress((progress) => {
+            if (progress.model_id !== "moonshine-base") return;
+            setMoonshineProgress(progress);
+            if (progress.percent >= 100 || progress.stage === "Done") {
+                setMoonshineInstalled(true);
+                setMoonshineDownloading(false);
+            }
+        }).then((fn) => (unlisten = fn));
+        return () => {
+            alive = false;
+            unlisten?.();
+        };
+    }, []);
+
     const cloudProviders: { key: CloudProvider; label: string }[] = [
         { key: "anthropic", label: "Anthropic" },
         { key: "openai", label: "OpenAI" },
         { key: "groq", label: "Groq" },
         { key: "cerebras", label: "Cerebras" },
+        { key: "zen", label: "OpenCode Zen" },
     ];
     const ttsModels = [
         { value: "model", label: "model (fp32)" },
@@ -553,16 +586,16 @@ export default memo(function SettingsPanel({
                                         Mode
                                     </span>
                                     <div className="flex gap-1">
-                                        {/* <Button
-                                            variant={(settings.transcriptionMode ?? "direct-deepgram") === "local-whisper" ? "default" : "outline"}
+                                        <Button
+                                            variant={(settings.transcriptionMode ?? "local-whisper") === "local-whisper" ? "default" : "outline"}
                                             size="xs"
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "local-whisper" })}
                                         >
-                                            Local (Experimental)
-                                        </Button> */}
+                                            Local (Free)
+                                        </Button>
                                         <Button
-                                            variant={(settings.transcriptionMode ?? "direct-deepgram") === "direct-deepgram" ? "default" : "outline"}
+                                            variant={(settings.transcriptionMode ?? "local-whisper") === "direct-deepgram" ? "default" : "outline"}
                                             size="xs"
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "direct-deepgram" })}
@@ -570,7 +603,7 @@ export default memo(function SettingsPanel({
                                             Direct Deepgram
                                         </Button>
                                         <Button
-                                            variant={(settings.transcriptionMode ?? "direct-deepgram") === "screenpipe" ? "default" : "outline"}
+                                            variant={(settings.transcriptionMode ?? "local-whisper") === "screenpipe" ? "default" : "outline"}
                                             size="xs"
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "screenpipe" })}
@@ -624,8 +657,86 @@ export default memo(function SettingsPanel({
                                 ) : (
                                     <div className="space-y-1.5">
                                         <p className="text-[9px] text-muted-foreground/50">
-                                            Uses the local transcription pipeline (no cloud key). Quality and latency can vary by hardware.
+                                            On-device transcription — free and private. Nothing leaves your machine.
                                         </p>
+
+                                        {/* Engine picker: Whisper vs Moonshine */}
+                                        <div>
+                                            <span className="text-[10px] text-foreground/60 font-medium mb-1 block">
+                                                Engine
+                                            </span>
+                                            <div className="flex gap-1">
+                                                <Button
+                                                    variant={(settings.localSttEngine ?? "whisper") === "whisper" ? "default" : "outline"}
+                                                    size="xs"
+                                                    className="flex-1 text-[10px]"
+                                                    onClick={() => onChange({ ...settings, localSttEngine: "whisper" })}
+                                                >
+                                                    Whisper
+                                                </Button>
+                                                <Button
+                                                    variant={settings.localSttEngine === "moonshine" ? "default" : "outline"}
+                                                    size="xs"
+                                                    className="flex-1 text-[10px]"
+                                                    disabled={!moonshineInstalled && !moonshineDownloading}
+                                                    onClick={() =>
+                                                        onChange({
+                                                            ...settings,
+                                                            localSttEngine: moonshineInstalled ? "moonshine" : settings.localSttEngine,
+                                                        })
+                                                    }
+                                                >
+                                                    {settings.localSttEngine === "moonshine" ? "Moonshine ✓" : "Moonshine"}
+                                                </Button>
+                                            </div>
+                                            {settings.localSttEngine === "moonshine" ? (
+                                                <p className="text-[9px] text-muted-foreground/50 mt-1">
+                                                    Moonshine base (int8): ~6× lower latency than Whisper, MIT licensed.
+                                                </p>
+                                            ) : null}
+                                            {!moonshineInstalled && (
+                                                <div className="mt-1.5 rounded-sm border border-border bg-background/40 p-2 space-y-1.5">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="text-[10px] text-foreground/70">
+                                                            Moonshine model (~240 MB, one-time download)
+                                                        </span>
+                                                        <Button
+                                                            size="xs"
+                                                            variant={moonshineInstalled ? "outline" : "default"}
+                                                            disabled={moonshineDownloading}
+                                                            onClick={() => {
+                                                                setMoonshineDownloading(true);
+                                                                setMoonshineProgress(null);
+                                                                downloadMoonshineModel()
+                                                                    .then(() => {
+                                                                        setMoonshineInstalled(true);
+                                                                        onChange({ ...settings, localSttEngine: "moonshine" });
+                                                                    })
+                                                                    .catch((err) =>
+                                                                        console.error("Moonshine download failed:", err)
+                                                                    )
+                                                                    .finally(() => setMoonshineDownloading(false));
+                                                            }}
+                                                        >
+                                                            {moonshineInstalled
+                                                                ? "Re-download"
+                                                                : moonshineDownloading
+                                                                    ? `${moonshineProgress?.stage ?? "Working"}${moonshineProgress?.percent ? ` ${moonshineProgress.percent}%` : "..."}`
+                                                                    : "Download"}
+                                                        </Button>
+                                                    </div>
+                                                    {moonshineDownloading && moonshineProgress?.total_bytes ? (
+                                                        <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+                                                            <div
+                                                                className="h-full bg-primary transition-all"
+                                                                style={{ width: `${Math.min(100, moonshineProgress.percent)}%` }}
+                                                            />
+                                                        </div>
+                                                    ) : null}
+                                                </div>
+                                            )}
+                                        </div>
+
                                         <div className="rounded-sm border border-border bg-background/40 p-2">
                                             <div className="flex items-center justify-between gap-2">
                                                 <div className="flex items-center gap-1.5">
@@ -660,9 +771,11 @@ export default memo(function SettingsPanel({
                                                                     <p className="mt-1 text-[10px] leading-relaxed text-foreground/85">
                                                                         {localGpuStatus?.message ?? "Checking GPU/CUDA status..."}
                                                                     </p>
-                                                                    <p className="mt-1 text-[9px] text-foreground/55">
-                                                                        Local transcription will run on CPU until CUDA is detected.
-                                                                    </p>
+                                                                    {localGpuStatus?.cuda_toolkit_version && (
+                                                                        <p className="mt-1 text-[9px] text-sky-300/70">
+                                                                            Toolkit: {localGpuStatus.cuda_toolkit_version}
+                                                                        </p>
+                                                                    )}
                                                                     {localGpuStatus && (
                                                                         <div className="mt-2 grid grid-cols-3 gap-1 text-[9px]">
                                                                             <span className={`rounded px-1.5 py-0.5 border ${localGpuStatus.nvidia_gpu_detected ? "border-emerald-400/40 text-emerald-300" : "border-destructive/40 text-destructive/90"}`}>
@@ -676,6 +789,19 @@ export default memo(function SettingsPanel({
                                                                             </span>
                                                                         </div>
                                                                     )}
+                                                                    {/* Actionable setup hints from the detector */}
+                                                                    {!!localGpuStatus?.hints?.length && (
+                                                                        <ul className="mt-2 space-y-1 list-disc pl-3.5">
+                                                                            {localGpuStatus.hints.map((hint, i) => (
+                                                                                <li key={i} className="text-[9px] leading-relaxed text-foreground/75">
+                                                                                    {hint}
+                                                                                </li>
+                                                                            ))}
+                                                                        </ul>
+                                                                    )}
+                                                                    <p className="mt-2 text-[9px] text-foreground/55">
+                                                                        After installing the CUDA Toolkit or changing environment variables, fully close and reopen the app — env vars are only read at launch.
+                                                                    </p>
                                                                 </div>
                                                                 <div className="px-3 py-2 flex items-center gap-2">
                                                                     <button

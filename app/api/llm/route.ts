@@ -63,7 +63,8 @@ export async function POST(request: NextRequest) {
             provider === "anthropic" ||
             provider === "openai" ||
             provider === "groq" ||
-            provider === "cerebras";
+            provider === "cerebras" ||
+            provider === "zen";
         if (!systemPrompt || !userMessage || !provider || !model || (needsKey && !apiKey)) {
             return new Response(
                 JSON.stringify({

@@ -1,0 +1,15 @@
+# Build-time environment for native deps.
+#
+# CMAKE_CUDA_FLAGS is required when compiling whisper.cpp against CUDA 13.x
+# with MSVC: CCCL (shipped with CUDA 13) hard-errors under cl.exe's legacy
+# preprocessor. `/Zc:preprocessor` opts into the conforming preprocessor.
+# whisper-rs-sys forwards any CMAKE_* / WHISPER_* env var into its cmake call.
+#
+# CUDA_PATH must point at an installed CUDA toolkit that MATCHES the highest
+# "CUDA X.Y Build Customizations" present in Visual Studio
+# (%ProgramFiles(x86)%\Microsoft Visual Studio\2022\*\MSBuild\Microsoft\VC\
+#  v170\BuildCustomizations\CUDA X.Y.targets). A mismatch produces
+#  "The CUDA Toolkit directory '' does not exist" during cmake configure.
+
+[env]
+CMAKE_CUDA_FLAGS = "-Xcompiler=-fPIC -Xcompiler=/Zc:preprocessor"

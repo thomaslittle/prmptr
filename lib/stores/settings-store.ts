@@ -40,9 +40,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     defaultProvider: "lmstudio",
     defaultModel: "lmstudio-auto",
     shortcuts: DEFAULT_SHORTCUTS,
-    // Privacy-first default: on-device transcription unless the user opts
-    // into cloud processing.
     transcriptionMode: "local-whisper",
+    localSttEngine: "whisper",
     muteInput: false,
     muteOutput: false,
     includeScreenshotOnAnalyze: false,
@@ -91,7 +90,7 @@ export const useSettingsStore = create<SettingsState>()(
             configuredProviders: () => {
                 const { apiKeys } = get().settings;
                 const providers = new Set<LLMProvider>(["lmstudio"]);
-                const allowedCloudProviders: LLMProvider[] = ["anthropic", "openai", "groq", "cerebras"];
+                const allowedCloudProviders: LLMProvider[] = ["anthropic", "openai", "groq", "cerebras", "zen"];
                 for (const [provider, key] of Object.entries(apiKeys)) {
                     if (key && allowedCloudProviders.includes(provider as LLMProvider)) {
                         providers.add(provider as LLMProvider);

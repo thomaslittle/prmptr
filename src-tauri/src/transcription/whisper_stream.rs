@@ -8,6 +8,55 @@ use std::sync::Once;
 use crate::transcription::transcript::{TranscriptBuffer, TranscriptEntry};
 use crate::transcription::speaker::{SpeechDetector, SpeakerTracker};
 
+// ──────────────────────────── STT Engine Abstraction ────────────────────────────
+
+/// Inference engine used for local transcription. Both variants consume
+/// 16 kHz mono f32 samples and produce text for a VAD-delimited utterance.
+pub enum SttEngine {
+    Whisper(whisper_rs::WhisperContext),
+    Moonshine(sherpa_rs::moonshine::MoonshineRecognizer),
+}
+
+impl SttEngine {
+    fn transcribe(&mut self, audio: &[f32], device_label: &str) -> Option<String> {
+        match self {
+            SttEngine::Whisper(ctx) => run_whisper(ctx, audio, device_label),
+            SttEngine::Moonshine(rec) => run_moonshine(rec, audio, device_label),
+        }
+    }
+}
+
+/// Run Moonshine on audio samples, return the transcribed text (or None).
+fn run_moonshine(
+    recognizer: &mut sherpa_rs::moonshine::MoonshineRecognizer,
+    audio: &[f32],
+    device_label: &str,
+) -> Option<String> {
+    let audio_secs = audio.len() as f32 / SAMPLE_RATE as f32;
+    log::debug!("[{device_label}] Running moonshine on {audio_secs:.1}s of audio ({} samples)", audio.len());
+
+    let result = recognizer.transcribe(SAMPLE_RATE as u32, audio);
+    let text = result.text.trim().to_string();
+    log::debug!("[{device_label}] Moonshine result: '{}'", text.chars().take(80).collect::<String>());
+
+    if text.len() < 2 {
+        return None;
+    }
+
+    let lower = text.to_lowercase();
+    if lower.contains("[blank_audio]")
+        || lower.contains("(blank audio)")
+        || lower == "you"
+        || lower == "the"
+        || lower == "thank you."
+        || (lower.starts_with('[') && lower.ends_with(']'))
+    {
+        return None;
+    }
+
+    Some(text)
+}
+
 static WHISPER_LOG_SILENCE_ONCE: Once = Once::new();
 
 unsafe extern "C" fn whisper_noop_log(
@@ -33,6 +82,8 @@ pub struct AudioRingBuffer {
     data: Vec<f32>,
     write_pos: usize,
     len: usize,
+    /// Monotonic count of samples ever pushed (watermark base for drains).
+    total_written: u64,
 }
 
 impl AudioRingBuffer {
@@ -41,6 +92,7 @@ impl AudioRingBuffer {
             data: vec![0.0; BUFFER_CAPACITY],
             write_pos: 0,
             len: 0,
+            total_written: 0,
         }
     }
 
@@ -52,6 +104,33 @@ impl AudioRingBuffer {
                 self.len += 1;
             }
         }
+        self.total_written += samples.len() as u64;
+    }
+
+    /// Current watermark: pass to `read_new_since` later to get everything since.
+    pub fn total_written(&self) -> u64 {
+        self.total_written
+    }
+
+    /// Read ALL samples pushed since `watermark` (oldest first), capped to
+    /// buffer capacity, plus the new watermark for the next call. Unlike a
+    /// fixed trailing window, nothing is lost between consumer cycles.
+    pub fn read_new_since(&self, watermark: u64) -> (Vec<f32>, u64) {
+        let newest = self.total_written;
+        if newest <= watermark {
+            return (Vec::new(), newest);
+        }
+        let available = (newest - watermark) as usize;
+        let count = available.min(self.len.min(BUFFER_CAPACITY));
+        // Oldest retrievable sample's absolute index
+        let start_abs = newest - count as u64;
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let abs = start_abs + i as u64;
+            let idx = (abs as usize) % BUFFER_CAPACITY;
+            out.push(self.data[idx]);
+        }
+        (out, newest)
     }
 
     /// Read the last N samples in chronological order
@@ -81,6 +160,9 @@ pub struct LocalWhisperConfig {
     pub output_device_name: Option<String>,
     pub whisper_model_id: Option<String>,
     pub prefer_gpu: bool,
+    /// When true, use Moonshine (sherpa-onnx) instead of Whisper for inference.
+    #[serde(default)]
+    pub use_moonshine: bool,
     pub inference_interval_ms: u64,
 }
 
@@ -91,8 +173,10 @@ impl Default for LocalWhisperConfig {
             output_device_name: None,
             whisper_model_id: None,
             prefer_gpu: false,
-            // Reduce CPU churn in local mode.
-            inference_interval_ms: 1200,
+            use_moonshine: false,
+            // Short interval: VAD sees audio quickly and finalize latency stays
+            // low. Drain-based reads make interval length loss-free regardless.
+            inference_interval_ms: 300,
         }
     }
 }
@@ -293,13 +377,58 @@ fn spawn_capture_thread(
 
 // ──────────────────────────── Per-Device Inference State ────────────────────────────
 
-/// How many 16kHz samples correspond to one inference cycle (800ms)
-const SAMPLES_PER_CYCLE: usize = 800 * SAMPLE_RATE / 1000; // 12,800
+/// Rolling audio history kept so VAD segment onsets can always be padded
+/// retroactively. Must exceed max utterance length (10s) + lead-in margin —
+/// a short trailing window can't reach back to the START of a long
+/// utterance, which is exactly how first words used to vanish.
+const HISTORY_SECS: usize = 15;
+const HISTORY_SAMPLES: usize = HISTORY_SECS * SAMPLE_RATE;
+
+/// Pre-speech audio seeded when a fresh utterance starts (fallback path).
+const PREROLL_SAMPLES: usize = 400 * SAMPLE_RATE / 1000;
+
+/// Lead-in prepended before each Silero VAD segment onset (600ms) — Silero
+/// trims at its probability trigger, which clips soft sentence starts.
+const LEAD_IN_SAMPLES: usize = 600 * SAMPLE_RATE / 1000;
+
+/// Prepend exactly the audio between [start - LEAD_IN, start) from
+/// the rolling history window onto a popped VAD segment. Works regardless
+/// of utterance length because history spans 15s.
+fn combine_segment_with_lead_in(
+    state: &mut DeviceInferState,
+    segment_start_raw: i32,
+    segment_samples: &[f32],
+) -> Vec<f32> {
+    let seg_start = (segment_start_raw.max(0) as u64).min(state.vad_fed_total);
+    let lead_wanted = seg_start.saturating_sub(LEAD_IN_SAMPLES as u64);
+    let history_len = state.recent_history.len() as u64;
+    let history_starts_at = state.vad_fed_total.saturating_sub(history_len);
+    let from = lead_wanted.max(history_starts_at);
+    let to = seg_start;
+    let mut combined =
+        Vec::with_capacity(segment_samples.len() + LEAD_IN_SAMPLES);
+    if to > from {
+        let s = (from - history_starts_at) as usize;
+        let e = (to - history_starts_at) as usize;
+        combined.extend_from_slice(&state.recent_history[s..e]);
+    }
+    combined.extend_from_slice(segment_samples);
+    if combined.len() > segment_samples.len() {
+        log::debug!(
+            "[vad] Prepended {}ms of lead-in before segment onset",
+            (combined.len() - segment_samples.len()) * 1000 / SAMPLE_RATE
+        );
+    }
+    combined
+}
 
 /// Emit an interim partial every N speech cycles so the UI shows progress
-const PARTIAL_EMIT_INTERVAL: u32 = 2; // ~1.6s
+const PARTIAL_EMIT_INTERVAL: u32 = 2;
 const EMIT_PARTIAL_EVENTS: bool = false;
-const SILENCE_FINALIZE_CYCLES: u32 = 2; // ~1.6s of silence fallback finalize
+
+/// Silence duration (time-based, not cycle-based) before finalizing an
+/// utterance via the fallback path.
+const SILENCE_FINALIZE_MS: u32 = 900;
 const MAX_UTTERANCE_SECS: usize = 9; // force split very long utterances
 const MIN_FALLBACK_FINALIZE_SECS: usize = 1; // avoid tiny accidental finalize
 
@@ -308,23 +437,37 @@ struct DeviceInferState {
     speaker_tracker: SpeakerTracker,
     /// Accumulated audio for partial emissions during ongoing speech
     speech_accumulator: Vec<f32>,
+    /// Rolling 15s window of ALL fed audio (speech or silence) used for
+    /// retroactive VAD onset padding and utterance preroll seeding
+    recent_history: Vec<f32>,
+    /// Ring-buffer watermark: everything before this was already consumed
+    read_watermark: u64,
+    /// Total samples fed to the VAD — matches Silero's segment.start basis
+    vad_fed_total: u64,
     current_partial_id: String,
     speech_started_at: Option<String>,
     speech_cycle_count: u32,
-    silence_cycle_count: u32,
+    silence_ms: u32,
     in_speech: bool,
 }
 
 impl DeviceInferState {
-    fn new(vad: SpeechDetector, speaker_tracker: SpeakerTracker) -> Self {
+    fn new(
+        vad: SpeechDetector,
+        speaker_tracker: SpeakerTracker,
+        initial_watermark: u64,
+    ) -> Self {
         Self {
             vad,
             speaker_tracker,
             speech_accumulator: Vec::new(),
+            recent_history: Vec::with_capacity(HISTORY_SAMPLES + SAMPLE_RATE),
+            read_watermark: initial_watermark,
+            vad_fed_total: 0,
             current_partial_id: uuid::Uuid::new_v4().to_string(),
             speech_started_at: None,
             speech_cycle_count: 0,
-            silence_cycle_count: 0,
+            silence_ms: 0,
             in_speech: false,
         }
     }
@@ -334,7 +477,7 @@ impl DeviceInferState {
         self.current_partial_id = uuid::Uuid::new_v4().to_string();
         self.speech_started_at = None;
         self.speech_cycle_count = 0;
-        self.silence_cycle_count = 0;
+        self.silence_ms = 0;
         self.in_speech = false;
     }
 }
@@ -452,12 +595,22 @@ impl WhisperStreamManager {
         // Silence verbose whisper.cpp token-by-token stderr output.
         silence_whisper_internal_logs();
 
-        // Resolve bundled models
-        let model_path = crate::transcription::model_manager::resolve_model_path(
-            &app,
-            config.whisper_model_id.as_deref(),
-        )?;
-        let model_path_str = model_path.to_string_lossy().to_string();
+        // Resolve engine models: Moonshine dir OR bundled/downloaded Whisper model
+        let moonshine_dir = if config.use_moonshine {
+            Some(crate::transcription::model_manager::resolve_moonshine_model_dir(&app)?)
+        } else {
+            None
+        };
+        let model_path_str = if config.use_moonshine {
+            String::new() // unused on the Moonshine path
+        } else {
+            crate::transcription::model_manager::resolve_model_path(
+                &app,
+                config.whisper_model_id.as_deref(),
+            )?
+            .to_string_lossy()
+            .to_string()
+        };
 
         let vad_model_path = crate::transcription::model_manager::resolve_vad_model_path(&app)?;
         let vad_model_path_str = vad_model_path.to_string_lossy().to_string();
@@ -506,42 +659,67 @@ impl WhisperStreamManager {
         let has_output = config.output_device_name.is_some();
 
         let inference_thread = std::thread::spawn(move || {
-            // Load model bytes in Rust and initialize whisper from memory.
-            // This avoids CRT file-descriptor issues in Windows debug GUI runs.
-            let model_bytes = match std::fs::read(&model_path_str) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    log::error!("Failed to read whisper model file '{model_path_str}': {e}");
-                    return;
+            // ─── Build the STT engine (Moonshine or Whisper) ───
+            let mut engine: SttEngine = if let Some(ref moon_dir) = moonshine_dir {
+                // Moonshine (sherpa-onnx, int8): tiny footprint, very low latency.
+                let cfg = sherpa_rs::moonshine::MoonshineConfig {
+                    preprocessor: moon_dir.join("preprocess.onnx").to_string_lossy().to_string(),
+                    encoder: moon_dir.join("encode.int8.onnx").to_string_lossy().to_string(),
+                    uncached_decoder: moon_dir.join("uncached_decode.int8.onnx").to_string_lossy().to_string(),
+                    cached_decoder: moon_dir.join("cached_decode.int8.onnx").to_string_lossy().to_string(),
+                    tokens: moon_dir.join("tokens.txt").to_string_lossy().to_string(),
+                    num_threads: Some(2),
+                    ..Default::default()
+                };
+                match sherpa_rs::moonshine::MoonshineRecognizer::new(cfg) {
+                    Ok(rec) => {
+                        log::info!("Moonshine model loaded: {}", moon_dir.display());
+                        SttEngine::Moonshine(rec)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load Moonshine model from '{}': {e}", moon_dir.display());
+                        return;
+                    }
+                }
+            } else {
+                // Load model bytes in Rust and initialize whisper from memory.
+                // This avoids CRT file-descriptor issues in Windows debug GUI runs.
+                let model_bytes = match std::fs::read(&model_path_str) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        log::error!("Failed to read whisper model file '{model_path_str}': {e}");
+                        return;
+                    }
+                };
+
+                let mut ctx_params = whisper_rs::WhisperContextParameters::default();
+                let force_gpu = std::env::var("PRMPTR_FORCE_GPU")
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                    .unwrap_or(false);
+                let request_gpu = config.prefer_gpu || force_gpu;
+                if request_gpu {
+                    if whisper_cuda_backend_available() {
+                        ctx_params.use_gpu(true).flash_attn(true).gpu_device(0);
+                        log::info!("Local whisper: GPU mode enabled");
+                    } else {
+                        log::warn!("Local whisper GPU requested, but CUDA backend unavailable; using CPU");
+                    }
+                }
+
+                match whisper_rs::WhisperContext::new_from_buffer_with_params(
+                    &model_bytes,
+                    ctx_params,
+                ) {
+                    Ok(c) => {
+                        log::info!("Whisper model loaded: {model_path_str}");
+                        SttEngine::Whisper(c)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load whisper model: {e}");
+                        return;
+                    }
                 }
             };
-
-            let mut ctx_params = whisper_rs::WhisperContextParameters::default();
-            let force_gpu = std::env::var("PRMPTR_FORCE_GPU")
-                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-                .unwrap_or(false);
-            let request_gpu = config.prefer_gpu || force_gpu;
-            if request_gpu {
-                if whisper_cuda_backend_available() {
-                    ctx_params.use_gpu(true).flash_attn(true).gpu_device(0);
-                    log::info!("Local whisper: GPU mode enabled");
-                } else {
-                    log::warn!("Local whisper GPU requested, but CUDA backend unavailable; using CPU");
-                }
-            }
-
-            let ctx = match whisper_rs::WhisperContext::new_from_buffer_with_params(
-                &model_bytes,
-                ctx_params,
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::error!("Failed to load whisper model: {e}");
-                    return;
-                }
-            };
-
-            log::info!("Whisper model loaded: {model_path_str}");
 
             // Suppress CRT debug assertions from onnxruntime.dll before first sherpa call.
             // Pre-load onnxruntime so its CRT initializes with valid std handles (set by main),
@@ -598,7 +776,7 @@ impl WhisperStreamManager {
                     return;
                 }
             };
-            let mut input_state = DeviceInferState::new(input_vad, input_speaker);
+            let mut input_state = DeviceInferState::new(input_vad, input_speaker, input_ring.lock().map(|b| b.total_written()).unwrap_or(0));
 
             let mut output_state = if has_output {
                 let output_vad = match SpeechDetector::new(&vad_model_path_str) {
@@ -615,7 +793,11 @@ impl WhisperStreamManager {
                         return;
                     }
                 };
-                Some(DeviceInferState::new(output_vad, output_speaker))
+                Some(DeviceInferState::new(
+                    output_vad,
+                    output_speaker,
+                    output_ring.lock().map(|b| b.total_written()).unwrap_or(0),
+                ))
             } else {
                 None
             };
@@ -629,52 +811,79 @@ impl WhisperStreamManager {
                 device_type: &str,
                 ring: &Arc<StdMutex<AudioRingBuffer>>,
                 state: &mut DeviceInferState,
-                ctx: &whisper_rs::WhisperContext,
+                engine: &mut SttEngine,
                 tx: &std::sync::mpsc::Sender<TranscriptionResult>,
+                interval_ms: u64,
                 cycle_count: u64,
             ) {
-                // 1. Read chunk from ring buffer
+                // 1. Drain ALL audio that arrived since the last cycle.
+                //    A fixed trailing window would silently drop samples
+                //    whenever inference takes longer than the interval —
+                //    which is exactly how sentence onsets used to vanish.
                 let chunk = {
                     let buf = match ring.lock() {
                         Ok(b) => b,
                         Err(_) => return,
                     };
-                    buf.read_last_n(SAMPLES_PER_CYCLE)
+                    let (samples, watermark) = buf.read_new_since(state.read_watermark);
+                    state.read_watermark = watermark;
+                    samples
+                };
+
+                // 2. Maintain the rolling history (pre-chunk snapshot so the
+                //    current chunk isn't double-counted when seeding).
+                let preroll_snapshot: Vec<f32> = {
+                    state.recent_history.extend_from_slice(&chunk);
+                    let keep_from = state.recent_history.len().saturating_sub(HISTORY_SAMPLES);
+                    if keep_from > 0 {
+                        state.recent_history.drain(..keep_from);
+                    }
+                    // Audio older than the current chunk, if any survived
+                    // the capacity cap.
+                    let snapshot_end = state.recent_history.len().saturating_sub(chunk.len());
+                    let snapshot = state.recent_history[..snapshot_end].to_vec();
+                    // Utterance seeding only needs the last ~400ms
+                    let tail = snapshot.len().saturating_sub(PREROLL_SAMPLES);
+                    snapshot[tail..].to_vec()
                 };
 
                 if chunk.is_empty() {
-                    if cycle_count % 10 == 0 {
+                    if cycle_count % 20 == 0 {
                         log::debug!("[{device_type}] Ring buffer empty (cycle {cycle_count})");
                     }
                     return;
                 }
 
-                // 2. Feed to VAD
+                // 3. Feed to VAD
                 state.vad.accept_waveform(&chunk);
+                state.vad_fed_total += chunk.len() as u64;
                 let is_speech = state.vad.is_speech();
 
                 // Track speech state transitions
                 if is_speech && !state.in_speech {
                     // Resume same utterance across short pauses; start new one after long silence.
                     if state.speech_accumulator.is_empty()
-                        || state.silence_cycle_count >= SILENCE_FINALIZE_CYCLES
+                        || state.silence_ms >= SILENCE_FINALIZE_MS
                     {
                         state.speech_started_at = Some(Utc::now().to_rfc3339());
                         state.current_partial_id = uuid::Uuid::new_v4().to_string();
                         state.speech_cycle_count = 0;
                         state.speech_accumulator.clear();
-                        log::debug!("[{device_type}] Speech started (VAD)");
+                        // Seed with pre-speech audio so first words survive
+                        // VAD trigger lag.
+                        state.speech_accumulator.extend_from_slice(&preroll_snapshot);
+                        log::debug!("[{device_type}] Speech started (VAD) +{}ms preroll", preroll_snapshot.len() * 1000 / SAMPLE_RATE);
                     } else {
                         log::debug!("[{device_type}] Speech resumed after brief pause");
                     }
                     state.in_speech = true;
-                    state.silence_cycle_count = 0;
+                    state.silence_ms = 0;
                 }
 
                 if is_speech {
                     state.speech_accumulator.extend_from_slice(&chunk);
                     state.speech_cycle_count += 1;
-                    state.silence_cycle_count = 0;
+                    state.silence_ms = 0;
                 }
 
                 if !is_speech {
@@ -682,26 +891,31 @@ impl WhisperStreamManager {
                         state.in_speech = false;
                     }
                     if !state.speech_accumulator.is_empty() {
-                        state.silence_cycle_count += 1;
+                        state.silence_ms += interval_ms as u32;
                     }
                 }
 
                 // Heartbeat every 10 cycles
                 if cycle_count % 10 == 0 {
                     log::debug!(
-                        "[{device_type}] Heartbeat cycle={cycle_count} speech={is_speech} in_speech={} cycles={}",
+                        "[{device_type}] Heartbeat cycle={cycle_count} speech={is_speech} in_speech={} cycles={} silence_ms={}",
                         state.in_speech,
                         state.speech_cycle_count,
+                        state.silence_ms,
                     );
                 }
 
-                // 3. Process complete VAD segments
+                // 3. Process complete VAD segments. Silero trims segments at
+                // its probability trigger, clipping soft sentence onsets —
+                // prepend exact lead-in audio from the preroll window.
                 while state.vad.has_segment() {
                     let segment = state.vad.pop_segment();
                     let audio_secs = segment.samples.len() as f32 / SAMPLE_RATE as f32;
                     log::debug!("[{device_type}] VAD segment: {audio_secs:.1}s ({} samples)", segment.samples.len());
+                    let combined_audio =
+                        combine_segment_with_lead_in(state, segment.start, &segment.samples);
 
-                    if let Some(text) = run_whisper(ctx, &segment.samples, device_type) {
+                    if let Some(text) = engine.transcribe(&combined_audio, device_type) {
                         // Identify speaker on final segments
                         let (speaker_id, speaker_label) = state
                             .speaker_tracker
@@ -738,11 +952,11 @@ impl WhisperStreamManager {
                 // sustained silence after speech, emit a final from accumulated audio.
                 if !state.in_speech
                     && !state.speech_accumulator.is_empty()
-                    && state.silence_cycle_count >= SILENCE_FINALIZE_CYCLES
+                    && state.silence_ms >= SILENCE_FINALIZE_MS
                 {
                     let speech_secs = state.speech_accumulator.len() / SAMPLE_RATE;
                     if speech_secs >= MIN_FALLBACK_FINALIZE_SECS {
-                        if let Some(text) = run_whisper(ctx, &state.speech_accumulator, device_type) {
+                        if let Some(text) = engine.transcribe(&state.speech_accumulator, device_type) {
                             let (speaker_id, speaker_label) = state
                                 .speaker_tracker
                                 .identify_speaker(&state.speech_accumulator, SAMPLE_RATE as u32)
@@ -775,7 +989,7 @@ impl WhisperStreamManager {
                     && state.speech_cycle_count % PARTIAL_EMIT_INTERVAL == 0
                     && !state.speech_accumulator.is_empty()
                 {
-                    if let Some(text) = run_whisper(ctx, &state.speech_accumulator, device_type) {
+                    if let Some(text) = engine.transcribe(&state.speech_accumulator, device_type) {
                         let timestamp = state.speech_started_at.clone()
                             .unwrap_or_else(|| Utc::now().to_rfc3339());
 
@@ -795,7 +1009,7 @@ impl WhisperStreamManager {
 
                 // 5. Force split very long utterances to avoid over-grouping.
                 if state.speech_accumulator.len() >= MAX_UTTERANCE_SECS * SAMPLE_RATE {
-                    if let Some(text) = run_whisper(ctx, &state.speech_accumulator, device_type) {
+                    if let Some(text) = engine.transcribe(&state.speech_accumulator, device_type) {
                         let (speaker_id, speaker_label) = state
                             .speaker_tracker
                             .identify_speaker(&state.speech_accumulator, SAMPLE_RATE as u32)
@@ -820,7 +1034,7 @@ impl WhisperStreamManager {
                     state.speech_started_at = Some(Utc::now().to_rfc3339());
                     state.speech_cycle_count = 0;
                     state.speech_accumulator.clear();
-                    state.silence_cycle_count = 0;
+                    state.silence_ms = 0;
                     state.in_speech = true;
                 }
             }
@@ -835,11 +1049,11 @@ impl WhisperStreamManager {
                 cycle_count += 1;
 
                 // Process input device
-                process_device("input", &input_ring, &mut input_state, &ctx, &tx, cycle_count);
+                process_device("input", &input_ring, &mut input_state, &mut engine, &tx, interval_ms, cycle_count);
 
                 // Process output device
                 if let Some(ref mut out_state) = output_state {
-                    process_device("output", &output_ring, out_state, &ctx, &tx, cycle_count);
+                    process_device("output", &output_ring, out_state, &mut engine, &tx, interval_ms, cycle_count);
                 }
             }
 
@@ -850,7 +1064,9 @@ impl WhisperStreamManager {
                 state.vad.flush();
                 while state.vad.has_segment() {
                     let segment = state.vad.pop_segment();
-                    if let Some(text) = run_whisper(&ctx, &segment.samples, device_type) {
+                    let combined_audio =
+                        combine_segment_with_lead_in(state, segment.start, &segment.samples);
+                    if let Some(text) = engine.transcribe(&combined_audio, device_type) {
                         let (speaker_id, speaker_label) = state
                             .speaker_tracker
                             .identify_speaker(&segment.samples, SAMPLE_RATE as u32)
@@ -954,4 +1170,5 @@ impl WhisperStreamManager {
         log::info!("Local whisper transcription stopped");
     }
 }
+
 

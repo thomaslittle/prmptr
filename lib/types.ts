@@ -62,7 +62,7 @@ export interface ScreenpipeResponse {
 // LLM Types
 // ============================================================
 
-export type LLMProvider = "anthropic" | "openai" | "groq" | "lmstudio" | "cerebras";
+export type LLMProvider = "anthropic" | "openai" | "groq" | "lmstudio" | "cerebras" | "zen";
 
 export interface ModelDef {
     id: string;
@@ -239,12 +239,15 @@ export interface AppSettings {
     includeScreenshotOnAnalyze?: boolean;
     deepgramApiKey?: string;
     transcriptionMode?: "screenpipe" | "local-whisper" | "direct-deepgram";
+    /** Inference engine for the on-device (local-whisper) mode. */
+    localSttEngine?: "whisper" | "moonshine";
     localPreferGpu?: boolean;
     apiKeys: {
         anthropic?: string;
         openai?: string;
         groq?: string;
         cerebras?: string;
+        zen?: string;
     };
     defaultProvider: LLMProvider;
     defaultModel: string;

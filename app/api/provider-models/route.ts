@@ -3,7 +3,7 @@ import { rejectUntrustedRequest, localHttpBaseUrl } from "@/lib/api-guard";
 
 export const dynamic = "force-dynamic";
 
-type Provider = "anthropic" | "openai" | "groq" | "cerebras" | "lmstudio";
+type Provider = "anthropic" | "openai" | "groq" | "cerebras" | "lmstudio" | "zen";
 
 type ProviderModel = {
     id: string;
@@ -95,6 +95,30 @@ async function fetchAnthropicModels(apiKey: string): Promise<ProviderModel[]> {
     );
 }
 
+async function fetchZenModels(apiKey?: string): Promise<ProviderModel[]> {
+    const headers: Record<string, string> = {};
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const resp = await fetch("https://opencode.ai/zen/v1/models", {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(15_000),
+    });
+    if (!resp.ok) return [];
+    const data = (await resp.json()) as { data?: Array<Record<string, unknown>> };
+    return filterChatModels(
+        (data?.data ?? [])
+            .map((m) => {
+                const id = typeof m?.id === "string" ? m.id : "";
+                if (!id) return null;
+                const supportsImageInput = normalizeModelCapability(m);
+                return supportsImageInput === undefined
+                    ? { id }
+                    : { id, supportsImageInput };
+            })
+            .filter((m): m is ProviderModel => !!m)
+    );
+}
+
 export async function POST(request: NextRequest) {
     const untrusted = rejectUntrustedRequest(request);
     if (untrusted) return untrusted;
@@ -126,6 +150,8 @@ export async function POST(request: NextRequest) {
         } else if (provider === "cerebras") {
             if (!body.apiKey) models = [];
             else models = await fetchOpenAiCompatibleModels("https://api.cerebras.ai/v1", body.apiKey);
+        } else if (provider === "zen") {
+            models = await fetchZenModels(body.apiKey);
         } else if (provider === "lmstudio") {
             const baseUrl = (body.baseUrl || "http://localhost:1234").trim().replace(/\/+$/, "");
             const normalized = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;

@@ -198,7 +198,8 @@ export async function startLocalTranscription(
     inputDeviceName?: string,
     outputDeviceName?: string,
     whisperModelId?: string,
-    preferGpu?: boolean
+    preferGpu?: boolean,
+    useMoonshine?: boolean
 ): Promise<void> {
     if (!isTauri()) throw new Error("Local transcription requires Tauri");
     const { invoke } = await import("@tauri-apps/api/core");
@@ -207,11 +208,13 @@ export async function startLocalTranscription(
         output_device_name: outputDeviceName ?? null,
         whisper_model_id: whisperModelId ?? null,
         prefer_gpu: preferGpu ?? null,
+        use_moonshine: useMoonshine ?? null,
         // Compatibility: support builds that expect camelCase argument mapping.
         inputDeviceName: inputDeviceName ?? null,
         outputDeviceName: outputDeviceName ?? null,
         whisperModelId: whisperModelId ?? null,
         preferGpu: preferGpu ?? null,
+        useMoonshine: useMoonshine ?? null,
     });
 }
 
@@ -221,6 +224,10 @@ export interface LocalGpuStatus {
     cuda_backend_available: boolean;
     can_use_gpu: boolean;
     message: string;
+    /** e.g. "v13.3 (via CUDA_PATH)" — which toolkit was found and how */
+    cuda_toolkit_version?: string;
+    /** Actionable setup steps when GPU is not fully usable */
+    hints?: string[];
 }
 
 export async function getLocalTranscriptionGpuStatus(): Promise<LocalGpuStatus> {
@@ -327,6 +334,19 @@ export async function downloadWhisperModel(modelId: string): Promise<void> {
         model_id: modelId,
         modelId,
     });
+}
+
+export async function isMoonshineModelInstalled(): Promise<boolean> {
+    if (!isTauri()) return false;
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("is_moonshine_model_installed");
+}
+
+/** Downloads + extracts the Moonshine base int8 model (~200 MB, one-time). */
+export async function downloadMoonshineModel(): Promise<void> {
+    if (!isTauri()) throw new Error("Moonshine download requires Tauri");
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("download_moonshine_model");
 }
 
 export async function onWhisperModelDownloadProgress(

@@ -78,6 +78,8 @@ pub fn run() {
             commands::get_selected_whisper_model,
             commands::set_selected_whisper_model,
             commands::download_whisper_model,
+            commands::is_moonshine_model_installed,
+            commands::download_moonshine_model,
             commands::get_local_transcription_gpu_status,
             commands::open_external_url,
             commands::proxy_tts_synthesize,

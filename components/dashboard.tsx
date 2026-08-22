@@ -617,7 +617,8 @@ export default function Dashboard() {
                         settings.audioDevice,
                         settings.outputDevice,
                         undefined,
-                        settings.localPreferGpu
+                        settings.localPreferGpu,
+                        (settings.localSttEngine ?? "whisper") === "moonshine"
                     );
                     setLocalWhisperRunning(true);
                     setIsLiveFeed(true);
