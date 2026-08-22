@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-/* Vendored from node_modules/shadcn/dist/tailwind.css — the package only
+/* Vendored from node_modules/shadcn/dist/tailwind.css --" the package only
    exposes it via a "style" export condition Turbopack can't resolve. */
 @import "./shadcn-theme.css";
 
@@ -301,7 +301,7 @@
   height: 0;
 }
 
-/* ── Prose: AI response typography ─────────────────────────── */
+/* -"--"- Prose: AI response typography -"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"- */
 
 .prose-response {
   font-size: 0.75rem;
@@ -394,7 +394,7 @@
   }
 }
 
-/* ── Response Sections ────────────────────────────────────── */
+/* -"--"- Response Sections -"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"--"- */
 
 .response-sections {
   display: flex;
@@ -433,7 +433,7 @@
   letter-spacing: 0.06em;
 }
 
-/* Dialog sections: the thing to say — most prominent */
+/* Dialog sections: the thing to say --" most prominent */
 .response-section--dialog {
   .prose-response {
     font-weight: 500;
@@ -448,13 +448,13 @@
   }
 }
 
-/* Section accent colors — light */
+/* Section accent colors --" light */
 .response-section--action  { --section-accent: oklch(0.50 0.14 55); }
 .response-section--dialog  { --section-accent: oklch(0.45 0.10 195); }
 .response-section--knowledge { --section-accent: oklch(0.48 0.10 290); }
 .response-section--context { --section-accent: oklch(0.45 0.01 60); }
 
-/* Section accent colors — dark */
+/* Section accent colors --" dark */
 .dark .response-section--action  { --section-accent: oklch(0.78 0.155 65); }
 .dark .response-section--dialog  { --section-accent: oklch(0.78 0.12 195); }
 .dark .response-section--knowledge { --section-accent: oklch(0.72 0.12 290); }
@@ -467,4 +467,57 @@
 }
 .response-enter {
   animation: response-enter 0.25s ease-out;
+}
+
+/* --- Landing page (/landing) --- */
+@keyframes lp-fade-up {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.lp-fade {
+    opacity: 0;
+    animation: lp-fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+@keyframes lp-marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+}
+.lp-marquee-track {
+    display: flex;
+    width: max-content;
+    animation: lp-marquee 28s linear infinite;
+}
+.lp-marquee:hover .lp-marquee-track {
+    animation-play-state: paused;
+}
+/* Scanline sweep across the hero console */
+@keyframes lp-scan {
+    from { top: -20%; }
+    to { top: 120%; }
+}
+.lp-scan::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    height: 48px;
+    background: linear-gradient(to bottom, transparent, oklch(0.78 0.155 65 / 6%), transparent);
+    animation: lp-scan 5.5s ease-in-out infinite;
+    pointer-events: none;
+}
+
+/* Landing: respect reduced-motion - content must stay visible */
+@media (prefers-reduced-motion: reduce) {
+    .lp-fade {
+        animation: none;
+        opacity: 1;
+        transform: none;
+    }
+    .lp-marquee-track {
+        flex-wrap: wrap;
+        width: auto;
+        animation: none;
+    }
+    .lp-scan::after {
+        display: none;
+    }
 }

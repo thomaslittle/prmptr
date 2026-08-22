@@ -3480,7 +3480,6 @@ dependencies = [
  "url",
  "uuid",
  "whisper-rs",
- "whisper-rs-sys",
  "zip",
 ]
 

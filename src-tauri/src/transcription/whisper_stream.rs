@@ -252,6 +252,17 @@ fn spawn_capture_thread(
                 .to_string()
         });
 
+        // Output-device loopback capture is a Windows WASAPI feature.
+        // On Linux/macOS, system-audio capture requires PulseAudio monitor
+        // sources or similar — gracefully skip for now.
+        if is_output && !cfg!(target_os = "windows") {
+            log::warn!(
+                "[{label}] System-audio (loopback) capture is not yet supported on this platform. \
+                 Only microphone input will be transcribed."
+            );
+            return;
+        }
+
         let matches_device = |dev_name: &str, wanted: &str| {
             let a = dev_name.trim();
             let b = wanted.trim();
