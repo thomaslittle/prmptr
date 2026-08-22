@@ -1,396 +1,663 @@
 "use client";
 
 import {
-    Ear,
-    Lightning,
-    ChatCircle,
-    PushPin,
-    Microphone,
-    Cpu,
-    ShieldCheck,
-    Waveform,
-    Globe,
-    Lock,
-    SpeakerHigh,
-    GithubLogo,
-    DownloadSimple,
-    ArrowRight,
-    Sparkle,
+  AirplaneTilt,
+  Brain,
+  Cpu,
+  Crosshair,
+  DesktopTower,
+  DownloadSimple,
+  Ear,
+  GithubLogo,
+  Globe,
+  GraphicsCard,
+  Lightning,
+  LockKey,
+  LockSimple,
+  Microphone,
+  PlugsConnected,
+  Question,
+  Sliders,
+  Sparkle,
+  Stack,
+  Timer,
+  ToggleRight,
+  Waveform,
+  X,
 } from "@phosphor-icons/react";
-import { buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { useEffect, useMemo, useRef, type PropsWithChildren } from "react";
 
-const RELEASE_URL =
-    "https://github.com/thomaslittle/prmptr/releases/tag/v0.1.0";
+/** Custom PRMPTR ear logo (inline SVG, replaces Phosphor Ear) */
+function Logo({ className = "", size = 22 }: { className?: string; size?: number }) {
+  return (
+    <svg viewBox="0 0 32 32" width={size} height={size} className={className} aria-hidden="true">
+      <path fill="currentColor" d="m5 13q0 0.4 0.3 0.7 0.3 0.3 0.7 0.3 0.4 0 0.7-0.3 0.3-0.3 0.3-0.7c0-2.4 0.9-4.7 2.6-6.4 1.7-1.7 4-2.6 6.4-2.6 2.4 0 4.7 0.9 6.4 2.6 1.7 1.7 2.6 4 2.6 6.4 0 3.3-1.1 4.4-2.2 5.5-1.1 1-2.3 2.2-2.3 5q0 0.9-0.3 1.7-0.4 0.8-1 1.5-0.7 0.6-1.5 1-0.8 0.3-1.7 0.3c-1.3 0-2.3-0.5-3.2-1.6q-0.3-0.4-0.7-0.4-0.4 0-0.7 0.2-0.4 0.3-0.4 0.7 0 0.4 0.2 0.7 2 2.4 4.8 2.4 1.3 0 2.5-0.5 1.2-0.5 2.1-1.4 0.9-0.9 1.4-2.1 0.5-1.2 0.5-2.5c0-2 0.7-2.7 1.7-3.6 1.2-1.2 2.8-2.7 2.8-6.9 0-2.9-1.2-5.7-3.2-7.8-2.1-2-4.9-3.2-7.8-3.2-2.9 0-5.7 1.2-7.8 3.2-2 2.1-3.2 4.9-3.2 7.8zm4.8 7.1q0.1-0.1 0.3-0.1 0.2 0 0.4 0 0.2 0.1 0.4 0.2 0.1 0.1 0.2 0.3 0.2 0.3 0.5 0.4 0.3 0.2 0.7 0.1 0.3-0.1 0.5-0.4 0.2-0.3 0.2-0.6c0-1.2-0.6-2-1.3-2.9-0.8-1.1-1.7-2.3-1.7-4.1 0-1.6 0.6-3.1 1.8-4.2 1.1-1.2 2.6-1.8 4.2-1.8 1.6 0 3.1 0.6 4.2 1.8 1.2 1.1 1.8 2.6 1.8 4.2q0 0.4-0.3 0.7-0.3 0.3-0.7 0.3-0.4 0-0.7-0.3-0.3-0.3-0.3-0.7c0-1.1-0.4-2.1-1.2-2.8-0.7-0.8-1.7-1.2-2.8-1.2-1.1 0-2.1 0.4-2.8 1.2-0.8 0.7-1.2 1.7-1.2 2.8 0 1.2 0.6 2 1.3 2.9 0.8 1.1 1.7 2.3 1.7 4.1 0 0.7-0.2 1.3-0.6 1.8-0.4 0.5-1 0.9-1.6 1.1-0.7 0.2-1.3 0.1-1.9-0.1-0.7-0.3-1.2-0.7-1.5-1.3q-0.1-0.2-0.1-0.4 0-0.2 0-0.4 0.1-0.1 0.2-0.3 0.1-0.2 0.3-0.3zm10-11.7c1.2 1 2 2.4 2.2 4 0.1 1.6-0.3 3.2-1.3 4.4-1 1.2-2.5 2-4.1 2.2-1.5 0.2-3.1-0.3-4.4-1.3q-0.3-0.3-0.3-0.7-0.1-0.4 0.2-0.7 0.2-0.3 0.7-0.4c0.2 0 0.5 0 0.7 0.2 0.4 0.5 1.9 1 2.9 0.9 1.1-0.1 2-0.6 2.7-1.4 0.7-0.9 1-1.9 0.9-3-0.1-1-0.7-2-1.5-2.7-0.9-0.7-1.3-0.9-2.4-0.9"/>
+    </svg>
+  );
+}
+
+const DOWNLOAD_URL = "https://github.com/thomaslittle/prmptr/releases/tag/v0.1.0";
 const REPO_URL = "https://github.com/thomaslittle/prmptr";
 
-const PERSONALITIES = [
-    "ROAST MASTER",
-    "UNHINGED",
-    "WITTY",
-    "HYPE MAN",
-    "SARCASTIC",
-    "PROFESSIONAL",
-    "OVER-FRIENDLY",
-    "VALLEY GIRL",
-    "GRANDPA",
-    "ROBOT",
+const TICKER = [
+  "On-device transcription",
+  "Works fully offline",
+  "Bring your own key",
+  "64 models via one Zen key",
+  "Ten personalities",
+  "Local or hosted, your call",
+  "No account required",
+  "MIT licensed",
 ];
 
-const FEATURES = [
-    {
-        icon: Microphone,
-        title: "Ears that never sleep",
-        body: "Dual-channel capture of your mic and system audio, gated by Silero VAD and transcribed fully on-device by Moonshine or whisper.cpp.",
-    },
-    {
-        icon: Cpu,
-        title: "GPU-fast inference",
-        body: "CUDA-accelerated Whisper Large-v3-Turbo on your NVIDIA card, or CPU-friendly Moonshine int8 at ~270ms. Detection diagnostics built in.",
-    },
-    {
-        icon: Sparkle,
-        title: "Ten personalities",
-        body: "Roast Master to Grandpa to full Unhinged chaos. Each one is a tuned prompt system, not a temperature knob.",
-    },
-    {
-        icon: Globe,
-        title: "Every provider",
-        body: "OpenCode Zen (including the free tier), Anthropic, OpenAI, Groq, Cerebras — or a local LM Studio server. One key, whole catalog.",
-    },
-    {
-        icon: SpeakerHigh,
-        title: "Voice replies",
-        body: "Optional spoken delivery through local Kokoro/Sherpa TTS or your own HTTP endpoint. Hands stay free, eyes stay on the call.",
-    },
-    {
-        icon: ShieldCheck,
-        title: "Private by design",
-        body: "Transcription runs on your machine. Keys live in OS-secure storage. API routes are loopback-only and origin-checked. Nothing syncs.",
-    },
+const problems = [
+  {
+    n: "001",
+    kicker: "Recall",
+    title: "You think of it in the car.",
+    body: "The right sentence exists — it just arrives after the conversation is over. Nothing in your workflow closes that gap while the room is still listening.",
+  },
+  {
+    n: "002",
+    kicker: "Divided attention",
+    title: "Note-taking costs you the room.",
+    body: "Every second spent typing is a second not spent reading the person across from you. Then the notes get written twice: badly, then never.",
+  },
+  {
+    n: "003",
+    kicker: "No say in it",
+    title: "Your audio goes somewhere you didn't pick.",
+    body: "Most meeting tools ship the raw room to one vendor's servers and keep it. Even when that's fine, it should be a decision rather than a default.",
+  },
+  {
+    n: "004",
+    kicker: "Round trips",
+    title: "The moment closes in a second.",
+    body: "A hosted pipeline can burn hundreds of milliseconds on the network before a model even starts. By the time the answer lands, the subject has changed.",
+  },
 ];
 
-function Wordmark({ className = "" }: { className?: string }) {
-    return (
-        <span className={`inline-flex items-center gap-1.5 ${className}`}>
-            <Ear weight="regular" className="-scale-x-100 text-yellow-400" />
-            <span className="font-semibold tracking-[0.18em]">PRMPTR</span>
-        </span>
+const localChain = [
+  { icon: Microphone, title: "Capture", meta: "mic + system" },
+  { icon: Waveform, title: "VAD gate", meta: "silero" },
+  { icon: Cpu, title: "Transcribe", meta: "~50ms" },
+  { icon: Lightning, title: "Overlay", meta: "always on top" },
+];
+
+const providers = [
+  { icon: Sparkle, title: "OpenCode Zen", tag: "Free tier" },
+  { icon: Brain, title: "Anthropic · OpenAI", tag: "Your key" },
+  { icon: Lightning, title: "Groq · Cerebras", tag: "Fast" },
+  { icon: DesktopTower, title: "LM Studio, local", tag: "Air-gapped" },
+];
+
+const benefits = [
+  {
+    icon: AirplaneTilt,
+    kicker: "Offline",
+    title: "Works on a plane",
+    body: "Capture and transcription never need a network, so a dead connection changes nothing about the core loop.",
+  },
+  {
+    icon: LockSimple,
+    kicker: "Control",
+    title: "You choose the route",
+    body: "Local by default, hosted when you want the reach. Keys live in OS-secure storage, not a browser.",
+  },
+  {
+    icon: Timer,
+    kicker: "Latency",
+    title: "Beats the pause",
+    body: "Fifty milliseconds to text, under half a second to a suggestion. Fast enough to use inside a natural gap.",
+  },
+];
+
+const chips = [
+  { icon: Microphone, title: "Dual capture", body: "Mic and system loopback on separate channels, each mutable from the header." },
+  { icon: Waveform, title: "Silero VAD", body: "Utterance boundaries with pre-roll padding so first words survive." },
+  { icon: Cpu, title: "Moonshine int8", body: "Roughly 6× lower latency than Whisper on CPU, MIT licensed." },
+  { icon: GraphicsCard, title: "GPU option", body: "Whisper Large-v3-Turbo on CUDA when a card is available." },
+  { icon: Globe, title: "Provider routing", body: "Zen, Anthropic, OpenAI, Groq, Cerebras or a local LM Studio server." },
+  { icon: LockKey, title: "OS key storage", body: "Keys held in Tauri secure storage, never localStorage." },
+];
+
+const steps = [
+  {
+    n: "01",
+    title: "Two small models instead of one large one.",
+    body: "Moonshine int8 for speech and a compact model for the reply. Neither needs a data centre, and both fit alongside whatever else you're running.",
+  },
+  {
+    n: "02",
+    title: "A gate that knows when to stay quiet.",
+    body: "Not every sentence deserves an answer. New dialogue is scored before it reaches a model, so the overlay speaks up on substance instead of on every pause.",
+  },
+  {
+    n: "03",
+    title: "Swap the reasoning layer whenever you like.",
+    body: "Stay on a local LM Studio server, or route to Zen, Anthropic, OpenAI, Groq and Cerebras with one key. Switch per session, mid-session if you want.",
+  },
+];
+
+const charts = [
+  {
+    title: "Time to text",
+    rows: [
+      { label: "Local Moonshine", pct: "8%", value: "~50 ms", bar: "oklch(0.78 0.155 65)", labelColor: "oklch(0.95 0.008 85)" },
+      { label: "Hosted STT", pct: "100%", value: "600 ms+", bar: "oklch(1 0 0 / 26%)", labelColor: "oklch(0.8 0.008 75 / 70%)" },
+    ],
+  },
+  {
+    title: "Models reachable",
+    rows: [
+      { label: "Local only", pct: "6%", value: "1–2", bar: "oklch(0.78 0.155 65)", labelColor: "oklch(0.95 0.008 85)" },
+      { label: "With one key", pct: "100%", value: "64", bar: "oklch(0.86 0.14 70 / 55%)", labelColor: "oklch(0.8 0.008 75 / 70%)" },
+    ],
+  },
+  {
+    title: "Cost per hour of talking",
+    rows: [
+      { label: "Local mode", pct: "1%", value: "$0.00", bar: "oklch(0.85 0.16 155)", labelColor: "oklch(0.95 0.008 85)" },
+      { label: "Hosted assistant", pct: "100%", value: "$0.40+", bar: "oklch(1 0 0 / 26%)", labelColor: "oklch(0.8 0.008 75 / 70%)" },
+    ],
+  },
+  {
+    title: "Install footprint",
+    rows: [
+      { label: "PRMPTR", pct: "12%", value: "38 MB", bar: "oklch(0.78 0.155 65)", labelColor: "oklch(0.95 0.008 85)" },
+      { label: "Whisper large", pct: "100%", value: "1.5 GB", bar: "oklch(1 0 0 / 26%)", labelColor: "oklch(0.8 0.008 75 / 70%)" },
+    ],
+  },
+];
+
+const capabilities = [
+  { n: "01", title: "Hears both sides at once.", body: "Dual-channel capture of your microphone and system audio, so calls, rooms and recordings all land in the same transcript." },
+  { n: "02", title: "Keeps the first word.", body: "Silero VAD carves utterances with 240ms of pre-onset padding, so openings survive instead of being clipped by the gate." },
+  { n: "03", title: "Presets for the situation.", body: "Interview, roleplay, meeting, podcast, lecture or general — each one loads its own context prompt, which you can edit inline." },
+  { n: "04", title: "Ten personalities, tuned not tweaked.", body: "Roast Master through Grandpa to Unhinged. Each is a full prompt system with its own register, not a temperature slider." },
+  { n: "05", title: "Speaks the answer if you want.", body: "Optional delivery through bundled Sherpa/Kokoro, or your own endpoint, with accent, voice, rate and volume all adjustable." },
+  { n: "06", title: "Manual, auto or smart triggers.", body: "Fire on a shortcut, on a timer you set, or let the gate decide. Interval and context size are sliders, not guesses." },
+];
+
+const stats = [
+  { key: "Latency", value: "~50ms", note: "Speech to text, local CPU" },
+  { key: "Offline", value: "Full", note: "No network needed to run" },
+  { key: "Models", value: "64", note: "Through one Zen key" },
+  { key: "Base cost", value: "$0", note: "MIT, no account, no meter" },
+];
+
+const faqs = [
+  { n: "01", question: "What is PRMPTR?", answer: "A desktop app that listens to your microphone and system audio, transcribes both, and shows suggested things to say in an always-on-top overlay. It ships for Windows x64 under the MIT licence." },
+  { n: "02", question: "Does it need the cloud?", answer: "No. Transcription runs on-device by default and the app is usable with no key at all. Hosted transcription and hosted models are opt-in switches for when you want more reach." },
+  { n: "03", question: "Which providers can I use?", answer: "OpenCode Zen — including its free tier — plus Anthropic, OpenAI, Groq and Cerebras, or a local LM Studio server. One Zen key opens roughly sixty-four models." },
+  { n: "04", question: "What hardware does it need?", answer: "Any modern Windows x64 machine. Moonshine int8 runs on CPU in about 50ms. If you have an NVIDIA card, Whisper Large-v3-Turbo can run on CUDA instead." },
+  { n: "05", question: "Where do my API keys live?", answer: "In OS-secure storage via Tauri, never in localStorage, and they migrate automatically from older versions. Local API routes are loopback-only and origin-checked." },
+  { n: "06", question: "What does it cost?", answer: "The app is free and MIT licensed, with no account and no usage meter. If you route to a hosted provider you pay that provider directly." },
+];
+
+type LandingProps = {
+  motion?: boolean;
+  mainScreenshot?: string;
+  captureScreenshot?: string;
+  voiceScreenshot?: string;
+};
+
+function Reveal({ children, className = "", enabled = true }: PropsWithChildren<{ className?: string; enabled?: boolean }>) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      el.dataset.visible = "true";
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        el.dataset.visible = "true";
+        observer.disconnect();
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -6% 0px" },
     );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [enabled]);
+
+  return (
+    <div ref={ref} className={`prmptr-reveal ${className}`} data-visible={enabled ? undefined : "true"}>
+      {children}
+    </div>
+  );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
-    return (
-        <div className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
-            <span className="inline-block h-px w-6 bg-primary/60" />
-            {children}
+function SectionShell({ children, className = "" }: PropsWithChildren<{ className?: string }>) {
+  return <div className={`mx-auto box-border max-w-[1360px] border-x border-white/10 px-5 py-16 sm:px-8 lg:px-9 lg:py-[88px] ${className}`}>{children}</div>;
+}
+
+function Eyebrow({ icon: Icon, children }: PropsWithChildren<{ icon: typeof X }>) {
+  return (
+    <span className="inline-flex items-center gap-2 border border-[oklch(0.78_0.155_65/45%)] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">
+      <Icon size={12} weight="bold" />
+      {children}
+    </span>
+  );
+}
+
+function CutCard({ children, innerClassName = "" }: PropsWithChildren<{ innerClassName?: string }>) {
+  return (
+    <div className="prmptr-cut-card bg-white/15 p-px">
+      <div className={`prmptr-cut-card-inner h-full bg-[oklch(0.235_0.004_60)] ${innerClassName}`}>{children}</div>
+    </div>
+  );
+}
+
+export default function PrmptrLanding({
+  motion = true,
+  mainScreenshot = "/uploads/pasted-1787396485869-0.png",
+  captureScreenshot = "/uploads/pasted-1787396500853-0.png",
+  voiceScreenshot = "/uploads/pasted-1787396515198-0.png",
+}: LandingProps) {
+  const tickerLoop = useMemo(() => [...TICKER, ...TICKER], []);
+  const wave = useMemo(
+    () =>
+      Array.from({ length: 96 }, (_, i) => {
+        const envelope = 0.35 + 0.65 * Math.abs(Math.sin(i / 9.5)) * (0.6 + 0.4 * Math.abs(Math.cos(i / 4.3)));
+        return {
+          height: `${Math.round(10 + envelope * 46)}px`,
+          color: i % 7 === 0 ? "oklch(0.86 0.14 70)" : "oklch(0.78 0.155 65 / 62%)",
+          duration: `${(0.9 + (i % 5) * 0.16).toFixed(2)}s`,
+          delay: `${((i % 13) * 0.07).toFixed(2)}s`,
+        };
+      }),
+    [],
+  );
+
+  return (
+    <main className="prmptr-page relative min-h-screen overflow-x-hidden bg-[oklch(0.26_0.004_60)] text-[oklch(0.95_0.008_85)] selection:bg-[oklch(0.78_0.155_65/35%)]">
+      <div className="prmptr-grain pointer-events-none fixed inset-0 z-[900] opacity-[0.075]" aria-hidden="true" />
+
+      <section id="top" className="relative overflow-hidden bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)]">
+        <Logo className="pointer-events-none absolute -right-[110px] -top-[70px] hidden h-[760px] w-[760px]  text-white/15 lg:block" aria-hidden="true" />
+
+        <nav className="relative mx-auto flex max-w-[1360px] items-center justify-between px-5 pt-6 sm:px-8 lg:px-9">
+          <a href="#top" className="flex items-center gap-2.5 hover:text-current">
+            <Logo size={22} className="" />
+            <span className="text-[21px] font-semibold tracking-[0.06em]">PRMPTR</span>
+          </a>
+
+          <div className="flex items-center gap-4 font-mono text-xs sm:gap-6">
+            <a href="#app" className="hidden hover:text-current md:inline">The app</a>
+            <a href="#faq" className="hidden hover:text-current md:inline">FAQ</a>
+            <a href={REPO_URL} className="hidden hover:text-current sm:inline">Source</a>
+            <span className="prmptr-nav-button-wrap bg-[oklch(0.16_0.012_55)] p-px">
+              <a href={DOWNLOAD_URL} className="prmptr-nav-button inline-flex h-[38px] items-center bg-[oklch(0.16_0.012_55)] px-4 font-bold text-white hover:bg-[oklch(0.78_0.155_65)] hover:text-[oklch(0.16_0.012_55)] sm:px-5">
+                <span className="sm:hidden">Download</span>
+                <span className="hidden sm:inline">Download v0.1.0</span>
+              </a>
+            </span>
+          </div>
+        </nav>
+
+        <div className="relative mx-auto max-w-[1360px] px-5 pb-20 pt-20 sm:px-8 lg:px-9 lg:pb-[92px] lg:pt-[100px]">
+          <h1 className={`${motion ? "prmptr-rise" : ""} max-w-[17ch] text-[clamp(3rem,6.4vw,6rem)] font-medium leading-[0.92] tracking-[-0.03em]`}>
+            Real-time conversation intel. Local first, yours to extend.
+          </h1>
+          <p className={`${motion ? "prmptr-rise prmptr-rise-delay-1" : ""} mt-8 max-w-[48ch] text-[17px] leading-[1.55] sm:text-[19px]`}>
+            It hears the room, transcribes on your own hardware, and hands you the line. Run it entirely offline, or point it at OpenCode Zen, Anthropic, OpenAI, Groq — whatever you already pay for.
+          </p>
+          <div className={`${motion ? "prmptr-rise prmptr-rise-delay-2" : ""} mt-10 flex flex-wrap gap-4`}>
+            <span className="bg-[oklch(0.16_0.012_55)] p-px prmptr-cut-button-wrap">
+              <a
+                href={DOWNLOAD_URL}
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.16_0.012_55)] text-white hover:bg-[oklch(0.78_0.155_65)] hover:text-[oklch(0.16_0.012_55)]"
+              >
+                <DownloadSimple size={17} weight="bold" />
+                Download for Windows
+              </a>
+            </span>
+            <span className="bg-[oklch(0.16_0.012_55/55%)] p-px prmptr-cut-button-wrap">
+              <a
+                href="#app"
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)] hover:bg-[oklch(0.16_0.012_55)] hover:text-white"
+              >
+                See it running
+              </a>
+            </span>
+          </div>
         </div>
-    );
+
+        <div className="relative overflow-hidden border-t border-[oklch(0.16_0.012_55/22%)] py-3.5">
+          <div className={`${motion ? "prmptr-ticker" : ""} flex w-max font-mono text-xs font-medium uppercase tracking-[0.12em] text-[oklch(0.16_0.012_55/72%)]`}>
+            {tickerLoop.map((item, index) => (
+              <span key={`${item}-${index}`} className="whitespace-nowrap px-6 sm:px-[26px]">
+                {item}<span className="ml-6 opacity-50 sm:ml-[26px]">•</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="border-b border-white/10 bg-[oklch(0.2_0.004_60)]">
+        <div className="mx-auto flex max-w-[1360px] items-center gap-4 px-5 py-5 sm:px-8 lg:gap-[30px] lg:px-9 lg:py-[26px]">
+          <span className="flex shrink-0 items-center gap-2.5 font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">
+            <span className={`${motion ? "prmptr-pulse" : ""} h-[7px] w-[7px] rounded-full bg-[oklch(0.85_0.16_155)]`} />
+            Listening
+          </span>
+          <span className="flex h-14 flex-1 items-center justify-between gap-[3px] overflow-hidden" aria-hidden="true">
+            {wave.map((bar, index) => (
+              <i
+                key={index}
+                className={`block min-w-[1px] flex-1 origin-center ${motion ? "prmptr-wave" : ""}`}
+                style={{ height: bar.height, background: bar.color, animationDuration: bar.duration, animationDelay: bar.delay }}
+              />
+            ))}
+          </span>
+          <span className="hidden shrink-0 whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.16em] text-[oklch(0.8_0.008_75/65%)] lg:inline">
+            Moonshine int8 · ~50ms · on device
+          </span>
+        </div>
+      </section>
+
+      <section id="problem" className="border-b border-white/10">
+        <SectionShell>
+          <div className="flex justify-center"><Eyebrow icon={X}>The problem</Eyebrow></div>
+          <h2 className="mt-10 max-w-[22ch] text-[clamp(2.5rem,4vw,3.5rem)] font-medium leading-[0.92] tracking-[-0.03em]">Your best line shows up ten minutes late.</h2>
+          <div className="mt-12 grid gap-5 md:grid-cols-2 lg:mt-14 lg:gap-[22px]">
+            {problems.map((problem) => (
+              <Reveal key={problem.n} enabled={motion}>
+                <CutCard innerClassName="p-7 sm:p-8">
+                  <div className="flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.16em]">
+                    <span className="text-[oklch(0.82_0.15_68)]">{problem.kicker}</span>
+                    <span className="text-[oklch(0.72_0.01_70/60%)]">{problem.n}</span>
+                  </div>
+                  <h3 className="mt-5 text-[27px] font-medium leading-[1.05] tracking-[-0.025em]">{problem.title}</h3>
+                  <p className="mt-3.5 max-w-[48ch] text-[15px] leading-[1.65] text-[oklch(0.8_0.008_75/80%)] [text-wrap:pretty]">{problem.body}</p>
+                </CutCard>
+              </Reveal>
+            ))}
+          </div>
+        </SectionShell>
+      </section>
+
+      <section id="local" className="border-b border-white/10 bg-[oklch(0.24_0.004_60)]">
+        <SectionShell>
+          <div className="flex justify-center"><Eyebrow icon={PlugsConnected}>Local first, not local only</Eyebrow></div>
+          <h2 className="mx-auto mt-10 max-w-[22ch] text-center text-[clamp(2.5rem,4vw,3.5rem)] font-medium leading-[0.92] tracking-[-0.03em]">Everything works offline. Plug in more when you want it.</h2>
+          <p className="mx-auto mt-5 max-w-[64ch] text-center text-[17px] leading-[1.6] text-[oklch(0.8_0.008_75/80%)]">Capture, gating and transcription always run on your machine. The reasoning step is yours to choose: a local model, or a provider key you already have.</p>
+
+          <div className="mt-12 grid overflow-hidden border border-white/15 bg-[oklch(0.225_0.004_60)] lg:grid-cols-[1fr_172px_1fr]">
+            <div className="p-6 sm:p-8">
+              <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[oklch(0.82_0.15_68)]">Always on your machine</p>
+              <div className="mt-5 flex flex-col gap-2.5">
+                {localChain.map(({ icon: Icon, title, meta }) => (
+                  <div key={title} className="prmptr-small-cut bg-[oklch(0.78_0.155_65/40%)] p-px">
+                    <div className="prmptr-small-cut-inner flex items-center gap-3.5 bg-[oklch(0.255_0.02_62)] p-3.5 sm:px-4">
+                      <Icon size={19} className="shrink-0 text-[oklch(0.82_0.15_68)]" />
+                      <span className="flex-1 font-mono text-[12.5px] uppercase tracking-[0.1em]">{title}</span>
+                      <span className="font-mono text-[11px] text-[oklch(0.8_0.008_75/65%)]">{meta}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-5 font-mono text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.85_0.16_155)]">✓ No key needed to get going</p>
+            </div>
+
+            <div className="flex items-center justify-center gap-4 border-y border-white/15 bg-[oklch(0.21_0.004_60)] p-5 lg:flex-col lg:border-x lg:border-y-0 lg:px-0 lg:py-8">
+              <span className="h-px flex-1 bg-[oklch(0.8_0.008_75/22%)] lg:h-auto lg:w-px" />
+              <span className="flex flex-col items-center gap-2 border border-[oklch(0.78_0.155_65/50%)] bg-[oklch(0.78_0.155_65/12%)] px-4 py-3.5 text-center">
+                <ToggleRight size={22} weight="bold" className="text-[oklch(0.82_0.15_68)]" />
+                <span className="font-mono text-[9.5px] uppercase leading-[1.5] tracking-[0.16em] text-[oklch(0.82_0.15_68)]">Your<br />call</span>
+              </span>
+              <span className="h-px flex-1 bg-[oklch(0.8_0.008_75/22%)] lg:h-auto lg:w-px" />
+            </div>
+
+            <div className="p-6 sm:p-8">
+              <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[oklch(0.8_0.008_75/75%)]">Optional, if you want the reach</p>
+              <div className="mt-5 flex flex-col gap-2.5">
+                {providers.map(({ icon: Icon, title, tag }) => (
+                  <div key={title} className="flex items-center gap-3.5 border border-white/15 p-3.5 sm:px-4">
+                    <Icon size={19} className="shrink-0 text-[oklch(0.8_0.008_75/80%)]" />
+                    <span className="flex-1 font-mono text-[12.5px] uppercase tracking-[0.1em] text-[oklch(0.9_0.008_80/90%)]">{title}</span>
+                    <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-[oklch(0.8_0.008_75/60%)]">{tag}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-5 font-mono text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/70%)]">One key, 64 models</p>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-5 md:grid-cols-3 lg:gap-[22px]">
+            {benefits.map(({ icon: Icon, kicker, title, body }) => (
+              <Reveal key={title} enabled={motion}>
+                <CutCard innerClassName="p-7 text-center sm:px-[30px] sm:pb-8">
+                  <span className="inline-flex items-center gap-2 border border-[oklch(0.78_0.155_65/45%)] px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-[oklch(0.82_0.15_68)]">
+                    <Icon size={12} weight="bold" />{kicker}
+                  </span>
+                  <h3 className="mt-5 text-[26px] font-medium tracking-[-0.025em]">{title}</h3>
+                  <p className="mt-3 text-[14.5px] leading-[1.65] text-[oklch(0.8_0.008_75/78%)] [text-wrap:pretty]">{body}</p>
+                </CutCard>
+              </Reveal>
+            ))}
+          </div>
+        </SectionShell>
+      </section>
+
+      <section id="app" className="border-b border-white/10">
+        <SectionShell>
+          <div className="flex justify-center"><Eyebrow icon={Sliders}>The app</Eyebrow></div>
+          <h2 className="mx-auto mt-10 text-center text-[clamp(2.5rem,4vw,3.5rem)] font-medium leading-[0.92] tracking-[-0.03em]">Three panes: the room, the answer, the knobs.</h2>
+          <p className="mx-auto mt-5 max-w-[62ch] text-center text-[17px] leading-[1.6] text-[oklch(0.8_0.008_75/80%)]">Transcript on the left, suggestions in the middle, everything tunable on the right — session preset, model, trigger mode, personality, response style.</p>
+
+          <div className="prmptr-window-cut mt-12 bg-white/15 p-px">
+            <div className="prmptr-window-cut-inner bg-[oklch(0.15_0.004_60)]">
+              <div className="flex items-center gap-2 border-b border-white/10 px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/60%)] sm:text-[11px]">
+                <span className="h-[9px] w-[9px] rounded-full bg-[oklch(0.62_0.2_25/70%)]" />
+                <span className="h-[9px] w-[9px] rounded-full bg-[oklch(0.83_0.16_82/70%)]" />
+                <span className="h-[9px] w-[9px] rounded-full bg-[oklch(0.85_0.16_155/70%)]" />
+                <span className="ml-2 hidden sm:inline">prmptr — live session · interview preset</span>
+                <span className="ml-auto text-[oklch(0.82_0.15_68)]">● Recording</span>
+              </div>
+              <img src={mainScreenshot} alt="PRMPTR main window: feed, analysis and configuration panes" className="block h-auto w-full" />
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-5 md:grid-cols-2 lg:gap-[22px]">
+            <Reveal enabled={motion}>
+              <CutCard innerClassName="overflow-hidden bg-[oklch(0.15_0.004_60)] p-0">
+                <img src={captureScreenshot} alt="Settings: capture and voice, transcription mode and engine" className="block h-auto w-full" />
+                <div className="border-t border-white/10 px-5 pb-5 pt-4">
+                  <p className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Capture & voice</p>
+                  <p className="mt-2.5 text-[14.5px] leading-[1.6] text-[oklch(0.8_0.008_75/80%)]">Pick your devices, then pick the engine. Local Whisper or Moonshine by default; Deepgram and Screenpipe are there if you want them.</p>
+                </div>
+              </CutCard>
+            </Reveal>
+            <Reveal enabled={motion}>
+              <CutCard innerClassName="overflow-hidden bg-[oklch(0.15_0.004_60)] p-0">
+                <img src={voiceScreenshot} alt="Settings: TTS voice reply configuration" className="block h-auto w-full" />
+                <div className="border-t border-white/10 px-5 pb-5 pt-4">
+                  <p className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Voice reply</p>
+                  <p className="mt-2.5 text-[14.5px] leading-[1.6] text-[oklch(0.8_0.008_75/80%)]">Bundled Sherpa/Kokoro speaks each reply through your output, with accent, voice, rate and volume under your control.</p>
+                </div>
+              </CutCard>
+            </Reveal>
+          </div>
+
+          <div className="mt-5 grid overflow-hidden border border-white/15 bg-white/15 sm:grid-cols-2 lg:grid-cols-3">
+            {chips.map(({ icon: Icon, title, body }) => (
+              <div key={title} className="flex flex-col gap-2.5 border-b border-r border-white/10 bg-[oklch(0.225_0.004_60)] p-5 sm:p-6">
+                <Icon size={20} className="text-[oklch(0.82_0.15_68)]" />
+                <p className="text-[17px] font-medium tracking-[-0.02em]">{title}</p>
+                <p className="text-[13px] leading-[1.6] text-[oklch(0.8_0.008_75/75%)]">{body}</p>
+              </div>
+            ))}
+          </div>
+        </SectionShell>
+      </section>
+
+      <section className="border-b border-white/10 bg-[oklch(0.24_0.004_60)]">
+        <SectionShell>
+          <div className="flex justify-center"><Eyebrow icon={Crosshair}>Our approach</Eyebrow></div>
+          <h2 className="mx-auto mt-10 text-center text-[clamp(2.5rem,4vw,3.5rem)] font-medium leading-[0.92] tracking-[-0.03em]">Small models, close to the mic.</h2>
+          <div className="mt-12 grid items-start gap-9 lg:grid-cols-[1.05fr_1fr] lg:mt-14">
+            <div className="border-t border-white/15">
+              {steps.map((step) => (
+                <Reveal key={step.n} enabled={motion} className="border-b border-l-2 border-b-white/15 border-l-[oklch(0.78_0.155_65/70%)] py-6 pl-6 sm:py-7">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Step {step.n}</p>
+                  <h3 className="mt-3.5 max-w-[32ch] text-[25px] font-medium leading-[1.08] tracking-[-0.025em]">{step.title}</h3>
+                  <p className="mt-3.5 max-w-[52ch] text-[15px] leading-[1.7] text-[oklch(0.8_0.008_75/78%)] [text-wrap:pretty]">{step.body}</p>
+                </Reveal>
+              ))}
+            </div>
+
+            <CutCard innerClassName="bg-[oklch(0.225_0.004_60)] p-6 sm:p-7">
+              <p className="font-mono text-[11px] uppercase tracking-[0.22em]">Local mode, laptop, no GPU</p>
+              <div className="mt-6 flex flex-col gap-6 font-mono">
+                {charts.map((chart) => (
+                  <div key={chart.title}>
+                    <p className="mb-3 text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/80%)]">{chart.title}</p>
+                    <div className="flex flex-col gap-2">
+                      {chart.rows.map((row) => (
+                        <div key={row.label} className="grid grid-cols-[105px_1fr_auto] items-center gap-3 text-[10.5px] sm:grid-cols-[124px_1fr_auto] sm:text-[11.5px]">
+                          <span style={{ color: row.labelColor }}>{row.label}</span>
+                          <span className="relative block h-2.5 bg-white/10">
+                            <i className="absolute inset-y-0 left-0 block" style={{ width: row.pct, background: row.bar }} />
+                          </span>
+                          <span className="min-w-[62px] text-right sm:min-w-[76px]" style={{ color: row.labelColor }}>{row.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* CUDA badge */}
+              <div className="mt-7 flex items-center gap-4 border-t border-white/10 pt-5">
+                <svg viewBox="590 230 900 620" width="52" height="36" aria-hidden="true">
+                  <path fill="#76b900" d="M1065.22873,425.14577v-54.92689c5.32957-.37764,10.71688-.6626,16.20671-.83601,150.22334-4.72073,248.78057,129.07979,248.78057,129.07979,0,0-106.44633,147.84488-220.57771,147.84488-16.43786,0-31.14868-2.64945-44.40957-7.10172v-166.55441c58.48096,7.06441,70.23929,32.89765,105.40881,91.50382l78.19751-65.93138s-57.08111-74.86559-153.30623-74.86559c-10.47061,0-20.47697.73841-30.30009,1.78751M1065.22873,243.70607v82.0431c5.39104-.42772,10.78876-.76806,16.20671-.96562,208.90854-7.0375,345.01061,171.32778,345.01061,171.32778,0,0-156.33251,190.0968-319.19248,190.0968-14.92371,0-28.89631-1.37804-42.02484-3.70247v50.71342c11.22808,1.42675,22.85778,2.26787,34.99494,2.26787,151.56388,0,261.16891-77.39426,367.30475-169.00355,17.58279,14.09032,89.62866,48.36503,104.44416,63.3874-100.92116,84.47674-336.09264,152.56464-469.4168,152.56464-12.84867,0-25.2054-.77474-37.32704-1.94089v71.27251h576.05304V243.70607h-576.05304ZM1065.22873,639.20582v43.29984c-140.18046-24.99212-179.08606-170.70641-179.08606-170.70641,0,0,67.30211-74.57022,179.08606-86.65348v47.50564c-.08739,0-.14395-.022-.21976-.022-58.65535-7.04516-104.48913,47.76369-104.48913,47.76369,0,0,25.6781,92.2603,104.70889,118.81271M816.2553,505.48484s83.0803-122.59099,248.97342-135.26596v-44.46971c-183.74262,14.74528-342.85899,170.36216-342.85899,170.36216,0,0,90.11413,260.53312,342.85899,284.38323v-47.27548c-185.46867-23.33521-248.97342-227.73423-248.97342-227.73423Z"/>
+                </svg>
+                <div>
+                  <p className="font-mono text-[13px] font-bold tracking-[0.08em] text-[#76b900]">NVIDIA CUDA</p>
+                  <p className="mt-0.5 text-[11px] text-[oklch(0.8_0.008_75/70%)]">GPU-accelerated inference when a card is present</p>
+                </div>
+              </div>
+            </CutCard>
+          </div>
+        </SectionShell>
+      </section>
+
+      <section id="capabilities" className="border-b border-white/10">
+        <SectionShell className="pb-0">
+          <div className="flex justify-center"><Eyebrow icon={Stack}>Capabilities</Eyebrow></div>
+          <h2 className="mx-auto mt-10 text-center text-[clamp(2.5rem,4vw,3.5rem)] font-medium leading-[0.92] tracking-[-0.03em]">Your hardware, unleashed.</h2>
+          <div className="mt-12 grid gap-5 md:grid-cols-2 lg:grid-cols-3 lg:mt-14 lg:gap-[22px]">
+            {capabilities.map((capability) => (
+              <Reveal key={capability.n} enabled={motion}>
+                <CutCard innerClassName="p-7 sm:px-[30px] sm:pb-8">
+                  <p className="font-mono text-[11px] tracking-[0.18em] text-[oklch(0.82_0.15_68)]">[ {capability.n} ]</p>
+                  <h3 className="mt-5 text-[22px] font-medium leading-[1.1] tracking-[-0.025em]">{capability.title}</h3>
+                  <p className="mt-3 text-[14.5px] leading-[1.65] text-[oklch(0.8_0.008_75/78%)] [text-wrap:pretty]">{capability.body}</p>
+                </CutCard>
+              </Reveal>
+            ))}
+          </div>
+        </SectionShell>
+
+        <div className="mx-auto mt-14 grid max-w-[1360px] border-y border-white/10 sm:grid-cols-2 lg:mt-[68px] lg:grid-cols-4">
+          {stats.map((stat) => (
+            <div key={stat.key} className="border-b border-r border-white/10 px-5 py-7 sm:px-8 lg:px-9 lg:py-[30px]">
+              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">{stat.key}</p>
+              <p className="mt-4 text-[42px] font-medium leading-none tracking-[-0.035em] lg:text-[46px]">{stat.value}</p>
+              <p className="mt-3 font-mono text-[11.5px] text-[oklch(0.8_0.008_75/70%)]">{stat.note}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section id="faq" className="border-b border-white/10 bg-[oklch(0.24_0.004_60)]">
+        <SectionShell className="grid gap-12 lg:grid-cols-[0.6fr_1fr] lg:gap-[72px]">
+          <div>
+            <Eyebrow icon={Question}>FAQ</Eyebrow>
+            <h2 className="mt-[30px] text-[clamp(2.5rem,4vw,3.5rem)] font-medium leading-[0.92] tracking-[-0.03em]">Frequently asked questions.</h2>
+            <p className="mt-5 max-w-[34ch] text-[15px] leading-[1.7] text-[oklch(0.8_0.008_75/75%)]">Everything else lives in the README. Issues and pull requests are open.</p>
+          </div>
+          <div className="border-t border-white/15">
+            {faqs.map((faq) => (
+              <div key={faq.n} className="grid grid-cols-[44px_1fr] gap-2 border-b border-white/15 py-6 sm:grid-cols-[54px_1fr]">
+                <span className="pt-1.5 font-mono text-xs text-[oklch(0.82_0.15_68)]">{faq.n}</span>
+                <div>
+                  <h3 className="text-xl font-medium tracking-[-0.02em]">{faq.question}</h3>
+                  <p className="mt-3 max-w-[70ch] text-[14.5px] leading-[1.75] text-[oklch(0.8_0.008_75/78%)] [text-wrap:pretty]">{faq.answer}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </SectionShell>
+      </section>
+
+      <section className="relative overflow-hidden bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)]">
+        <Logo className="pointer-events-none absolute -bottom-[190px] -left-[160px] hidden h-[620px] w-[620px]  text-[oklch(0.16_0.012_55/8%)] lg:block" aria-hidden="true" />
+        <div className="relative mx-auto flex max-w-[1360px] flex-col items-center px-5 py-20 text-center sm:px-8 lg:px-9 lg:pb-24 lg:pt-[88px]">
+          <Logo size={132} className="" />
+          <h2 className="mx-auto mt-[30px] max-w-[20ch] text-[clamp(2.75rem,5.2vw,4.75rem)] font-medium leading-[0.92] tracking-[-0.03em]">Start local. Scale it however you like.</h2>
+          <div className="mt-9 flex flex-wrap items-center justify-center gap-4">
+            <span className="bg-[oklch(0.16_0.012_55)] p-px prmptr-cut-button-wrap">
+              <a
+                href={DOWNLOAD_URL}
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.16_0.012_55)] text-white hover:bg-[oklch(0.78_0.155_65)] hover:text-[oklch(0.16_0.012_55)]"
+              >
+                <DownloadSimple size={17} weight="bold" />
+                Download v0.1.0
+              </a>
+            </span>
+            <span className="bg-[oklch(0.16_0.012_55/55%)] p-px prmptr-cut-button-wrap">
+              <a
+                href={REPO_URL}
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)] hover:bg-[oklch(0.16_0.012_55)] hover:text-white"
+              >
+                <GithubLogo size={17} weight="bold" />
+                Read the source
+              </a>
+            </span>
+          </div>
+          <p className="mt-5 font-mono text-xs uppercase tracking-[0.16em] opacity-70">No account. 38 MB. Bring your own key, or don&apos;t.</p>
+        </div>
+      </section>
+
+      <footer className="bg-[oklch(0.22_0.004_60)]">
+        <div className="mx-auto grid max-w-[1360px] gap-9 px-5 pb-6 pt-12 sm:grid-cols-2 sm:px-8 lg:grid-cols-[1.5fr_1fr_1fr_1fr] lg:px-9 lg:pt-14">
+          <div>
+            <span className="flex items-center gap-2.5"><Logo size={20} className=" text-[oklch(0.82_0.15_68)]" /><span className="text-lg font-semibold tracking-[0.06em]">PRMPTR</span></span>
+            <p className="mt-4 max-w-[32ch] text-sm leading-[1.7] text-[oklch(0.8_0.008_75/72%)]">Local-first real-time conversation assistance. Tauri, Next.js, Rust, whisper.cpp, Moonshine. MIT licensed.</p>
+          </div>
+          <FooterColumn title="Project" links={[['GitHub', REPO_URL], ['Releases', `${REPO_URL}/releases`], ['Issues', `${REPO_URL}/issues`]]} />
+          <FooterColumn title="Docs" links={[['README', `${REPO_URL}#readme`], ['Contributing', `${REPO_URL}/blob/main/CONTRIBUTING.md`], ['Security', `${REPO_URL}/security/policy`]]} />
+          <div className="flex flex-col gap-2.5 font-mono text-[12.5px] text-[oklch(0.8_0.008_75/72%)]">
+            <p className="mb-1 text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.95_0.008_85)]">Providers</p>
+            <span>OpenCode Zen</span>
+            <span>Anthropic · OpenAI</span>
+            <span>Groq · Cerebras · LM Studio</span>
+          </div>
+        </div>
+        <div className="mx-auto max-w-[1360px] px-5 pb-10 sm:px-8 lg:px-9">
+          <p className="flex flex-col justify-between gap-4 border-t border-white/10 pt-5 font-mono text-[11px] leading-[1.8] text-[oklch(0.8_0.008_75/60%)] sm:flex-row sm:gap-[30px]">
+            <span className="max-w-[80ch]">Use responsibly and in accordance with local consent laws for recording conversations. PRMPTR is a local tool — you are responsible for how you use its output.</span>
+            <span className="whitespace-nowrap">© 2026 · MIT License</span>
+          </p>
+        </div>
+      </footer>
+    </main>
+  );
 }
 
-export default function LandingPage() {
-    return (
-        <main className="noise-bg relative min-h-screen bg-background text-foreground">
-            {/* ─── Nav ─── */}
-            <nav className="fixed inset-x-0 top-0 z-50 border-b border-border bg-background/85 backdrop-blur-sm">
-                <div className="mx-auto flex h-12 max-w-5xl items-center justify-between px-5">
-                    <a href="/landing" className="text-xs">
-                        <Wordmark />
-                    </a>
-                    <div className="hidden items-center gap-6 text-[11px] uppercase tracking-widest text-muted-foreground sm:flex">
-                        <a href="#features" className="transition-colors hover:text-foreground">Features</a>
-                        <a href="#how" className="transition-colors hover:text-foreground">How it works</a>
-                        <a href="#privacy" className="transition-colors hover:text-foreground">Privacy</a>
-                        <a href={REPO_URL} target="_blank" rel="noreferrer" className="flex items-center gap-1 transition-colors hover:text-foreground">
-                            <GithubLogo weight="bold" className="size-3.5" /> GitHub
-                        </a>
-                    </div>
-                    <a href={RELEASE_URL} target="_blank" rel="noreferrer" className={cn(buttonVariants({ size: "sm" }), "gap-1.5")}>
-                        <DownloadSimple weight="bold" className="size-3.5" />
-                        Download
-                    </a>
-                </div>
-            </nav>
-
-            {/* ─── Hero ─── */}
-            <section className="relative mx-auto max-w-5xl px-5 pt-32 pb-16">
-                <div className="lp-fade mb-5 inline-flex items-center gap-2 border border-border bg-card px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-                    <span className="size-1.5 rounded-full bg-emerald-400 status-pulse" />
-                    v0.1.0 · Windows x64 · MIT licensed
-                </div>
-
-                <h1 className="lp-fade max-w-3xl text-4xl leading-[1.05] font-semibold tracking-tight sm:text-6xl" style={{ animationDelay: "80ms" }}>
-                    Never miss the{" "}
-                    <span className="text-primary">perfect line</span>.
-                </h1>
-
-                <p className="lp-fade mt-5 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-base" style={{ animationDelay: "160ms" }}>
-                    PRMPTR listens to the room, transcribes everything locally on
-                    your machine, and hands you the exact thing to say — comebacks,
-                    answers, facts — before the moment passes.
-                </p>
-
-                <div className="lp-fade mt-7 flex flex-wrap items-center gap-2.5" style={{ animationDelay: "240ms" }}>
-                    <a href={RELEASE_URL} target="_blank" rel="noreferrer" className={cn(buttonVariants({ size: "lg" }), "gap-1.5")}>
-                        <DownloadSimple weight="bold" className="size-4" />
-                        Download for Windows
-                    </a>
-                    <a href={REPO_URL} target="_blank" rel="noreferrer" className={cn(buttonVariants({ size: "lg", variant: "outline" }), "gap-1.5")}>
-                        <GithubLogo weight="bold" className="size-4" />
-                        Star on GitHub
-                    </a>
-                    <span className="ml-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-                        Free · No account · No cloud required
-                    </span>
-                </div>
-
-                {/* ─── App mock ─── */}
-                <div className="lp-fade lp-scan relative mt-14 border border-border bg-card shadow-[0_30px_80px_-30px_rgba(0,0,0,0.8)]" style={{ animationDelay: "340ms" }}>
-                    {/* window chrome */}
-                    <div className="flex items-center gap-1.5 border-b border-border bg-popover px-3 py-2">
-                        <span className="size-2 rounded-full bg-destructive/70" />
-                        <span className="size-2 rounded-full bg-amber-400/70" />
-                        <span className="size-2 rounded-full bg-emerald-400/70" />
-                        <span className="ml-2 flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-                            <Ear weight="regular" className="-scale-x-100 size-3 text-yellow-400" />
-                            prmptr — live session
-                        </span>
-                        <span className="ml-auto flex items-center gap-1.5 audio-meter-chip is-active">
-                            <Waveform weight="bold" className="size-2.5" />
-                            REC
-                            <span className="audio-meter-bars"><i /><i /><i /></span>
-                        </span>
-                    </div>
-
-                    <div className="grid gap-px bg-border md:grid-cols-[1fr_1.15fr]">
-                        {/* transcript feed */}
-                        <div className="space-y-2 bg-background p-4 text-xs">
-                            <p className="mb-3 text-[9px] uppercase tracking-[0.25em] text-muted-foreground">Live transcript</p>
-                            <p><span className="mr-1.5 text-sky-300">[THEM]</span>Okay so walk me through why the stop was even legal?</p>
-                            <p><span className="mr-1.5 text-primary">[YOU]</span>I was turning left on a protected—</p>
-                            <p><span className="mr-1.5 text-sky-300">[THEM]</span>Protected? There&apos;s no arrow on that street.</p>
-                            <p className="text-muted-foreground"><span className="mr-1.5 text-yellow-400">[AUDIO]</span>…unintelligible background chatter…</p>
-                            <p className="text-muted-foreground/60 cursor-blink">▍</p>
-                        </div>
-
-                        {/* analysis output */}
-                        <div className="space-y-3 bg-popover p-4 text-xs">
-                            <p className="mb-1 text-[9px] uppercase tracking-[0.25em] text-muted-foreground">Analysis · Roast Master</p>
-                            <div className="border-l-2 border-primary/60 pl-2.5">
-                                <p className="flex items-center gap-1 font-medium text-primary">
-                                    <Lightning weight="fill" /> Say this
-                                </p>
-                                <p className="mt-1 leading-relaxed text-foreground/90">
-                                    &ldquo;There was an arrow until your city repaved it
-                                    and forgot — want me to cite the maintenance
-                                    records, or are we improvising?&rdquo;
-                                </p>
-                            </div>
-                            <div className="border-l-2 border-sky-400/60 pl-2.5">
-                                <p className="flex items-center gap-1 font-medium text-sky-300">
-                                    <ChatCircle weight="fill" /> Know this
-                                </p>
-                                <p className="mt-1 leading-relaxed text-foreground/75">
-                                    Protected-left disputes hinge on signal evidence.
-                                    Ask which intersection study they relied on.
-                                </p>
-                            </div>
-                            <div className="border-l-2 border-muted-foreground/40 pl-2.5">
-                                <p className="flex items-center gap-1 font-medium text-muted-foreground">
-                                    <PushPin weight="fill" /> Context
-                                </p>
-                                <p className="mt-1 leading-relaxed text-foreground/60">
-                                    Third traffic-stop question in a row — steer
-                                    toward the civil relief angle.
-                                </p>
-                            </div>
-                            <p className="cursor-blink text-primary">▍</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            {/* ─── Stats band ─── */}
-            <section className="border-y border-border bg-secondary/40">
-                <div className="mx-auto grid max-w-5xl grid-cols-2 px-5 sm:grid-cols-4 sm:divide-x sm:divide-border">
-                    {[
-                        ["~50ms", "Moonshine STT latency"],
-                        ["64", "models via one Zen key"],
-                        ["10", "personalities built in"],
-                        ["0", "cloud calls by default"],
-                    ].map(([stat, label], i) => (
-                        <div
-                            key={label}
-                            className={`px-4 py-5 text-center ${i >= 2 ? "border-t border-border sm:border-t-0" : ""} ${i % 2 === 1 ? "border-l border-border sm:border-l-0" : ""}`}
-                        >
-                            <p className="text-xl font-semibold text-primary">{stat}</p>
-                            <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">{label}</p>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            {/* ─── Features ─── */}
-            <section id="features" className="mx-auto max-w-5xl scroll-mt-16 px-5 py-20">
-                <SectionLabel>Features</SectionLabel>
-                <h2 className="max-w-lg text-2xl font-semibold tracking-tight sm:text-3xl">
-                    A full listening post, running on your hardware.
-                </h2>
-                <div className="mt-10 grid gap-px border border-border bg-border sm:grid-cols-2 lg:grid-cols-3">
-                    {FEATURES.map((f) => (
-                        <div key={f.title} className="group bg-background p-5 transition-colors hover:bg-card">
-                            <f.icon weight="regular" className="size-5 text-primary transition-transform group-hover:-translate-y-0.5" />
-                            <h3 className="mt-3 text-sm font-semibold">{f.title}</h3>
-                            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{f.body}</p>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            {/* ─── Personality marquee ─── */}
-            <section className="border-y border-border bg-secondary/40 py-8 overflow-hidden">
-                <p className="mb-5 text-center text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-                    Pick a voice for every occasion
-                </p>
-                <div className="overflow-hidden lp-marquee">
-                    <div className="lp-marquee-track gap-2.5 pr-2.5">
-                        {[...PERSONALITIES, ...PERSONALITIES].map((p, i) => (
-                            <span
-                                key={`${p}-${i}`}
-                                aria-hidden={i >= PERSONALITIES.length}
-                                className="whitespace-nowrap border border-border bg-background px-3 py-1.5 text-[11px] uppercase tracking-widest text-muted-foreground"
-                            >
-                                {p}
-                            </span>
-                        ))}
-                    </div>
-                </div>
-            </section>
-
-            {/* ─── How it works ─── */}
-            <section id="how" className="mx-auto max-w-5xl scroll-mt-16 px-5 py-20">
-                <SectionLabel>How it works</SectionLabel>
-                <h2 className="max-w-lg text-2xl font-semibold tracking-tight sm:text-3xl">
-                    Three steps between their question and your answer.
-                </h2>
-                <div className="mt-10 grid gap-px border border-border bg-border sm:grid-cols-3">
-                    {[
-                        {
-                            n: "01",
-                            icon: Microphone,
-                            t: "Listen",
-                            b: "Your mic and system audio stream into a ring buffer. Silero VAD carves utterances out with pre-onset padding, so first words survive.",
-                        },
-                        {
-                            n: "02",
-                            icon: Cpu,
-                            t: "Think",
-                            b: "Moonshine or whisper.cpp transcribes each segment locally. New dialog goes to your LLM behind a smart gate that knows when to chime in.",
-                        },
-                        {
-                            n: "03",
-                            icon: Lightning,
-                            t: "Speak",
-                            b: "Suggestions land in an always-on-top overlay — sectioned, markdown-clean, optionally read aloud via local TTS.",
-                        },
-                    ].map((step) => (
-                        <div key={step.n} className="bg-background p-5">
-                            <div className="flex items-center justify-between">
-                                <span className="text-3xl font-semibold text-primary/25">{step.n}</span>
-                                <step.icon weight="regular" className="size-5 text-primary" />
-                            </div>
-                            <h3 className="mt-4 text-sm font-semibold uppercase tracking-widest">{step.t}</h3>
-                            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{step.b}</p>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            {/* ─── Privacy ─── */}
-            <section id="privacy" className="scroll-mt-16 border-y border-border bg-secondary/40">
-                <div className="mx-auto grid max-w-5xl gap-10 px-5 py-20 md:grid-cols-[auto_1fr]">
-                    <ShieldCheck weight="regular" className="size-14 text-primary" />
-                    <div>
-                        <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                            Your words never leave the room.
-                        </h2>
-                        <div className="mt-6 grid gap-3 text-xs leading-relaxed text-muted-foreground sm:grid-cols-2">
-                            <p>Transcription runs entirely on-device by default — Moonshine or Whisper, no microphone data uploaded, ever.</p>
-                            <p>API keys live in OS-secure storage via Tauri, never localStorage. Migrated automatically from older versions.</p>
-                            <p>All local API routes are loopback-only, origin-checked, and guarded against SSRF. The dev server binds to 127.0.0.1.</p>
-                            <p>Cloud transcription and vision uploads exist as explicit opt-ins — flipping them off returns you to a fully air-gapped flow.</p>
-                        </div>
-                        <div className="mt-7 flex flex-wrap items-center gap-2">
-                            <span className="flex items-center gap-1.5 border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-                                <ShieldCheck weight="bold" className="size-3 text-emerald-400" /> Loopback-only routes
-                            </span>
-                            <span className="flex items-center gap-1.5 border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-                                <Lock weight="bold" className="size-3 text-emerald-400" /> Secure key storage
-                            </span>
-                            <span className="flex items-center gap-1.5 border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-                                <Microphone weight="bold" className="size-3 text-emerald-400" /> On-device STT default
-                            </span>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            {/* ─── Final CTA ─── */}
-            <section className="mx-auto max-w-5xl px-5 py-24 text-center">
-                <SectionLabel>
-                    <span className="inline-flex items-center gap-2">
-                        <Sparkle weight="fill" className="text-primary" /> Ready when you are
-                    </span>
-                </SectionLabel>
-                <h2 className="mx-auto max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
-                    The next conversation starts in seconds.{" "}
-                    <span className="text-muted-foreground">Walk in armed.</span>
-                </h2>
-                <div className="mt-8 flex flex-wrap items-center justify-center gap-2.5">
-                    <a href={RELEASE_URL} target="_blank" rel="noreferrer" className={cn(buttonVariants({ size: "lg" }), "gap-1.5")}>
-                        <DownloadSimple weight="bold" className="size-4" />
-                        Download v0.1.0
-                    </a>
-                    <a href={`${REPO_URL}/contributing`} target="_blank" rel="noreferrer" className={cn(buttonVariants({ size: "lg", variant: "outline" }), "gap-1.5")}>
-                        Contribute
-                        <ArrowRight weight="bold" className="size-4" />
-                    </a>
-                </div>
-            </section>
-
-            {/* ─── Footer ─── */}
-            <footer className="border-t border-border bg-secondary/40">
-                <div className="mx-auto max-w-5xl px-5 py-10">
-                    <div className="flex flex-col items-start justify-between gap-6 sm:flex-row">
-                        <div>
-                            <Wordmark className="text-xs" />
-                            <p className="mt-2 max-w-sm text-[11px] leading-relaxed text-muted-foreground">
-                                Local-first real-time AI assistance. Built with Tauri,
-                                Next.js, Rust, whisper.cpp and Moonshine. MIT licensed.
-                            </p>
-                        </div>
-                        <div className="flex gap-10 text-[11px] text-muted-foreground">
-                            <div className="space-y-1.5">
-                                <p className="uppercase tracking-widest text-foreground/70">Project</p>
-                                <a href={REPO_URL} target="_blank" rel="noreferrer" className="block hover:text-foreground">GitHub</a>
-                                <a href={`${REPO_URL}/releases`} target="_blank" rel="noreferrer" className="block hover:text-foreground">Releases</a>
-                                <a href={`${REPO_URL}/issues`} target="_blank" rel="noreferrer" className="block hover:text-foreground">Issues</a>
-                            </div>
-                            <div className="space-y-1.5">
-                                <p className="uppercase tracking-widest text-foreground/70">Docs</p>
-                                <a href={`${REPO_URL}#readme`} target="_blank" rel="noreferrer" className="block hover:text-foreground">README</a>
-                                <a href={`${REPO_URL}/blob/main/CONTRIBUTING.md`} target="_blank" rel="noreferrer" className="block hover:text-foreground">Contributing</a>
-                                <a href={`${REPO_URL}/security/policy`} target="_blank" rel="noreferrer" className="block hover:text-foreground">Security</a>
-                            </div>
-                        </div>
-                    </div>
-                    <p className="mt-8 border-t border-border pt-5 text-[10px] leading-relaxed text-muted-foreground/70">
-                        Use responsibly and in accordance with local consent laws for
-                        recording conversations. PRMPTR is a local tool — you are
-                        responsible for how you use its output. © 2026 · MIT License
-                    </p>
-                </div>
-            </footer>
-        </main>
-    );
+function FooterColumn({ title, links }: { title: string; links: Array<[string, string]> }) {
+  return (
+    <div className="flex flex-col gap-2.5 font-mono text-[12.5px] text-[oklch(0.8_0.008_75/72%)]">
+      <p className="mb-1 text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.95_0.008_85)]">{title}</p>
+      {links.map(([label, href]) => <a key={label} href={href} className="transition-colors hover:text-[oklch(0.82_0.15_68)]">{label}</a>)}
+    </div>
+  );
 }

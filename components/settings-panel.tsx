@@ -46,6 +46,8 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { db, getPreference, setPreference } from "@/lib/db";
+import { useCliSubscriptions } from "@/lib/use-cli-subscriptions";
+import { CLI_SUBSCRIPTIONS } from "@/lib/cli-providers";
 
 const SETTINGS_TAB_KEY = "settings-tab";
 const SETTINGS_TABS = ["capture", "providers", "voice", "shortcuts"] as const;
@@ -150,6 +152,8 @@ export default memo(function SettingsPanel({
     statusMessage,
 }: SettingsPanelProps) {
     const [activeTab, setActiveTab] = useState<SettingsTab>("capture");
+    const cliSubsQuery = useCliSubscriptions();
+    const cliDetected = (cliSubsQuery.data ?? []).filter((s) => s.detected);
 
     useEffect(() => {
         getPreference(SETTINGS_TAB_KEY).then((saved) => {
@@ -172,7 +176,7 @@ export default memo(function SettingsPanel({
         message?: string;
     } | null>(null);
 
-    const [showKeys, setShowKeys] = useState<Record<CloudProvider, boolean>>({
+    const [showKeys, setShowKeys] = useState<Record<string, boolean>>({
         anthropic: false,
         openai: false,
         groq: false,
@@ -891,6 +895,80 @@ export default memo(function SettingsPanel({
                 </TabsContent>
 
                 <TabsContent value="providers" className="mt-4 space-y-5 overflow-y-auto min-h-0">
+                    {/* CLI Subscriptions (Claude Code / Codex / OpenCode) */}
+                    <SectionCard>
+                        <SectionLabel icon={Plug} label="CLI Subscriptions" />
+                        {cliSubsQuery.isLoading ? (
+                            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                                <CircleNotch weight="bold" className="size-3 animate-spin" />
+                                Detecting installed CLIs...
+                            </div>
+                        ) : cliDetected.length === 0 ? (
+                            <div className="space-y-1.5">
+                                <p className="text-[11px] text-muted-foreground/60">
+                                    No AI coding CLIs detected. Install and log in to reuse your
+                                    subscription here — no API key needed:
+                                </p>
+                                {CLI_SUBSCRIPTIONS.map((sub) => (
+                                    <p key={sub.id} className="text-[10px] text-muted-foreground/50 font-mono pl-2">
+                                        {sub.loginHint}
+                                    </p>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {CLI_SUBSCRIPTIONS.map((meta) => {
+                                    const status = cliSubsQuery.data?.find((s) => s.id === meta.id);
+                                    const usable = !!status?.detected && !!status?.loggedIn;
+                                    return (
+                                        <div key={meta.id} className="flex items-center justify-between gap-2">
+                                            <div className="flex items-center gap-1.5 min-w-0">
+                                                {usable ? (
+                                                    <CheckCircle weight="fill" className="size-3 text-emerald-400 shrink-0" />
+                                                ) : (
+                                                    <XCircle weight="fill" className="size-3 text-muted-foreground/40 shrink-0" />
+                                                )}
+                                                <div className="min-w-0">
+                                                    <span className={`text-[11px] font-medium block truncate ${usable ? "text-foreground/80" : "text-muted-foreground/60"}`}>
+                                                        {status?.name ?? meta.name}
+                                                    </span>
+                                                    <span className="text-[10px] text-muted-foreground/50 block truncate">
+                                                        {!status?.detected
+                                                            ? "Not installed"
+                                                            : !status?.loggedIn
+                                                                ? (status.hint || "Not logged in")
+                                                                : status.account || "Logged in"}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            {usable && (
+                                                <Button
+                                                    size="xs"
+                                                    variant={(settings.cliSubscriptions?.[meta.id] ?? true) ? "default" : "outline"}
+                                                    onClick={() =>
+                                                        onChange({
+                                                            ...settings,
+                                                            cliSubscriptions: {
+                                                                ...settings.cliSubscriptions,
+                                                                [meta.id]: !(settings.cliSubscriptions?.[meta.id] ?? true),
+                                                            },
+                                                        })
+                                                    }
+                                                >
+                                                    {(settings.cliSubscriptions?.[meta.id] ?? true) ? "On" : "Off"}
+                                                </Button>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                                <p className="text-[10px] text-muted-foreground/50">
+                                    Detected subscriptions appear as model options. Credentials stay in each
+                                    tool&apos;s own config — prmptr never stores them.
+                                </p>
+                            </div>
+                        )}
+                    </SectionCard>
+
                     {/* API Keys (cloud + Deepgram) */}
                     <SectionCard>
                         <SectionLabel icon={Key} label="API Keys" />

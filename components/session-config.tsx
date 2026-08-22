@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import ContextEditor from "@/components/context-editor";
+import { ModelPicker } from "@/components/model-picker";
+import { modelDisplayName } from "@/lib/model-display";
 import {
     Dialog,
     DialogContent,
@@ -16,7 +18,6 @@ import {
     DialogTitle,
     DialogClose,
 } from "@/components/ui/dialog";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
     DropdownMenu,
@@ -36,7 +37,7 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { zenModelDisplayName, isFreeZenModel } from "@/lib/zen-models";
+import { isCliSubscriptionProvider } from "@/lib/cli-providers";
 
 const TEMPLATES: SessionTemplate[] = [
     {
@@ -179,13 +180,15 @@ export default memo(function SessionConfigPanel({
             const entries = await Promise.all(
                 providersToFetch.map(async (provider) => {
                     const body: { provider: LLMProvider; apiKey?: string; baseUrl?: string } = { provider };
-                    if (provider !== "lmstudio") {
+                    if (provider === "lmstudio") {
+                        body.baseUrl = settings.lmstudioUrl;
+                    } else if (!isCliSubscriptionProvider(provider)) {
                         const key = settings.apiKeys[provider as Exclude<LLMProvider, "lmstudio">];
                         if (!key) return [provider, []] as const;
                         body.apiKey = key;
-                    } else {
-                        body.baseUrl = settings.lmstudioUrl;
                     }
+                    // CLI subscription providers need no apiKey — the server
+                    // resolves credentials from the logged-in CLI.
 
                     try {
                         const resp = await fetch("/api/provider-models", {
@@ -218,6 +221,9 @@ export default memo(function SessionConfigPanel({
         staleTime: 60_000,
         gcTime: 10 * 60_000,
         refetchOnWindowFocus: false,
+        // Live-refresh so newly-added models (e.g. new Claude Code / OpenAI
+        // models) appear in the picker without a reload.
+        refetchInterval: 5 * 60_000,
     });
     const providerModels = providerModelsQuery.data ?? {};
 
@@ -232,12 +238,10 @@ export default memo(function SessionConfigPanel({
                 const key = `${provider}:${id}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
-                const isZen = provider === "zen";
-                const name = isZen ? zenModelDisplayName(id) : id;
-                const free = isZen && isFreeZenModel(id);
+                const name = modelDisplayName(id, provider);
                 merged.push({
                     id,
-                    name: free ? `${name} · free` : name,
+                    name,
                     provider,
                     speed: "fast",
                     description: "Fetched from provider",
@@ -272,27 +276,13 @@ export default memo(function SessionConfigPanel({
         });
     };
 
-    const groupedModels = useMemo(() => {
-        const groups = availableModels.reduce<Record<string, typeof availableModels>>((acc, model) => {
-            const key = model.provider;
-            if (!acc[key]) acc[key] = [];
-            acc[key].push(model);
-            return acc;
-        }, {});
-        // Free tier first, then alphabetical — keeps the 60+ model Zen list scannable
-        if (groups.zen) {
-            groups.zen.sort((a, b) => {
-                const aFree = isFreeZenModel(a.id) ? 0 : 1;
-                const bFree = isFreeZenModel(b.id) ? 0 : 1;
-                if (aFree !== bFree) return aFree - bFree;
-                return a.name.localeCompare(b.name);
-            });
-        }
-        return groups;
-    }, [availableModels]);
-
     const currentSession = sessions.find((s) => s.id === currentSessionId);
     const sessionTitle = currentSession?.title ?? "New Session";
+
+    const selectedModel = useMemo(
+        () => availableModels.find((m) => m.id === config.model),
+        [availableModels, config.model]
+    );
 
     return (
         <div className="flex flex-col min-h-0 flex-1">
@@ -545,44 +535,18 @@ export default memo(function SessionConfigPanel({
                             Select a model
                         </div>
                     ) : availableModels.length > 0 ? (
-                        <Select
+                        <ModelPicker
+                            models={availableModels}
                             value={config.model}
-                            onValueChange={(value) => {
-                                const model = availableModels.find(
-                                    (m) => m.id === value
-                                );
-                                if (model) {
-                                    onChange({
-                                        ...config,
-                                        model: model.id,
-                                        provider: model.provider,
-                                    });
-                                }
+                            providerValue={selectedModel?.provider}
+                            onSelect={(model) => {
+                                onChange({
+                                    ...config,
+                                    model: model.id,
+                                    provider: model.provider,
+                                });
                             }}
-                        >
-                            <SelectTrigger className="w-full h-7 text-xs">
-                                <SelectValue placeholder="Select a model" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {Object.entries(groupedModels).map(([provider, models]) => (
-                                    <SelectGroup key={provider}>
-                                        <SelectLabel>
-                                            {provider === "lmstudio"
-                                                ? "LM Studio"
-                                                : provider === "zen"
-                                                    ? "OpenCode Zen"
-                                                    : provider.charAt(0).toUpperCase() + provider.slice(1)}
-                                        </SelectLabel>
-                                        {models.map((model) => (
-                                            <SelectItem key={model.id} value={model.id}>
-                                                {model.name}
-                                                <span className="text-muted-foreground ml-1">({model.speed})</span>
-                                            </SelectItem>
-                                        ))}
-                                    </SelectGroup>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                        />
                     ) : (
                         <p className="text-[10px] text-muted-foreground/50">
                             Add an API key in Settings to select a model

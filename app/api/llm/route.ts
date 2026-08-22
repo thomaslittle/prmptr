@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { streamLLMResponse } from "@/lib/llm-providers";
 import { LLMProvider } from "@/lib/types";
+import { isCliSubscriptionProvider, CliSubscriptionId } from "@/lib/cli-providers";
+import { resolveCliCredential } from "@/lib/cli-providers-server";
 import { rejectUntrustedRequest, localHttpBaseUrl } from "@/lib/api-guard";
 
 export const dynamic = "force-dynamic";
@@ -59,6 +61,7 @@ export async function POST(request: NextRequest) {
             temperature,
         } = body;
 
+        // CLI subscription providers resolve their credentials server-side.
         const needsKey =
             provider === "anthropic" ||
             provider === "openai" ||
@@ -74,6 +77,24 @@ export async function POST(request: NextRequest) {
                 }),
                 { status: 400, headers: { "Content-Type": "application/json" } }
             );
+        }
+
+        // CLI subscription credentials never travel from the client — they are
+        // resolved from the logged-in CLI's own config files at call time.
+        let cliCredential: Awaited<ReturnType<typeof resolveCliCredential>> = null;
+        if (typeof provider === "string" && isCliSubscriptionProvider(provider as LLMProvider)) {
+            const id = provider as CliSubscriptionId;
+            cliCredential = await resolveCliCredential(id);
+            if (!cliCredential) {
+                return new Response(
+                    JSON.stringify({
+                        error:
+                            `No usable subscription for ${id}. Install the CLI and log in ` +
+                            `(claude auth login / codex login / opencode auth login), then retry.`,
+                    }),
+                    { status: 400, headers: { "Content-Type": "application/json" } }
+                );
+            }
         }
 
         let normalizedBaseUrl: string | undefined;
@@ -121,7 +142,8 @@ export async function POST(request: NextRequest) {
                         userMessage,
                         provider: provider as LLMProvider,
                         model: effectiveModel,
-                        apiKey: apiKey || "",
+                        apiKey: cliCredential ? cliCredential.token : apiKey || "",
+                        accountId: cliCredential?.accountId,
                         imageDataUrl: typeof imageDataUrl === "string" ? imageDataUrl : undefined,
                         baseUrl: normalizedBaseUrl,
                         maxTokens: maxTokens || 1024,

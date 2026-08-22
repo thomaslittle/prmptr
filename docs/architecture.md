@@ -6,10 +6,10 @@ transcribes it, and streams LLM-generated suggestions to an always-on-top overla
 
 ```
 ┌────────────────────────── Webview (Next.js) ──────────────────────────┐
-│  app/page.tsx (dashboard)        app/overlay/ (overlay window)        │
-│      │                                │                               │
-│  components/dashboard.tsx        overlay consumes Rust event stream   │
-│      ├── hooks/use-screenpipe          (onResponseStream)             │
+│  app/page.tsx (dashboard)                                             │
+│      │                                                                │
+│  components/dashboard.tsx                                             │
+│      ├── hooks/use-screenpipe                                         │
 │      ├── hooks/use-local-transcription                                │
 │      └── components/ai-response.tsx   ← streaming client, rate-limit  │
 │                                         fallback, seen-item gating    │
@@ -24,30 +24,44 @@ transcribes it, and streams LLM-generated suggestions to an always-on-top overla
 │ /api/llm            │    │  commands.rs        — command entrypoints  │
 │ /api/provider-models│    │  screenpipe/        — process mgmt+install │
 │ /api/stream         │    │  transcription/     — whisper & deepgram   │
-│ /api/screen-frame   │    │  session/, llm/     — session cmds, dead*  │
+│ /api/screen-frame   │    │  session/           — session cmds         │
 │  All loopback-only  │    └────────────────────────────────────────────┘
 │  (lib/api-guard.ts) │
 └─────────────────────┘
 ```
 
-## The two LLM paths (IMPORTANT — known duplication)
+## LLM access (single path)
 
-There are **two parallel stacks** for talking to LLM providers. They were left
-in place deliberately (deferred consolidation decision, 2026-08):
+The Rust LLM stack (`src-tauri/src/llm/*`, `trigger_llm` command,
+`response-stream` events) was **deleted in 2026-08** — it had no live callers.
+All provider traffic goes through one path:
 
-| Path | Entry | Status |
-|------|-------|--------|
-| **TS path** | `lib/llm-providers.ts` via `POST /api/llm` | **Live/canonical.** Dashboard + ai-response use it. Supports anthropic/openai/groq/cerebras/lmstudio, SSE streaming, image input. |
-| **Rust path** | `src-tauri/src/llm/*` via `trigger_llm` command → `response-stream` events | **Dead-ish.** No frontend callers except the overlay's event listener (`app/overlay`). Kept because the overlay currently renders its events. |
+- **TS path**: `lib/llm-providers.ts` via `POST /api/llm` — supports
+  anthropic/openai/groq/cerebras/lmstudio, SSE streaming, image input.
+- `lib/prompt-builder.ts` is the only prompt builder (the Rust duplicate is gone).
+- The two surviving Rust helpers `validate_api_key` / `fetch_lmstudio_models`
+  are plain `reqwest` calls in `commands.rs`, kept for key-checking and LM
+  Studio model listing from the settings UI.
 
-**Rules until this is consolidated:**
-1. New providers/models/features go in the TS path only.
-2. Prompt construction exists twice (`lib/prompt-builder.ts` and
-   `src-tauri/src/llm/prompt_builder.rs`) — treat the TS one as canonical.
-3. If you touch the overlay's data source, expect output-format drift vs
-   `/api/llm`; see finding ARCH-02 in the audit.
-4. Consolidation options when revisited: port overlay to the TS stream and
-   delete `src-tauri/src/llm`, or move everything behind Tauri commands.
+## Overlay window (future feature — not wired up)
+
+The always-on-top floating suggestion HUD (`app/overlay/`, `overlay` window in
+`tauri.conf.json`: frameless, transparent, always-on-top, starts hidden) is the
+original product vision: transcribe mic + system audio, show AI-suggested
+replies over whatever app you're using.
+
+**Current state:** unreachable. No code shows/toggles the window (the
+"Ctrl+Shift+H to toggle" hint on the page has no handler behind it), and its
+only data source (`response-stream`) was removed with the Rust LLM path. The
+page currently renders as an empty shell if ever shown.
+
+**To revive it (planned):**
+1. Register a global shortcut to show/hide the window (and click-through
+   toggle).
+2. Port the page to consume the TS `/api/llm` stream instead of the deleted
+   Rust events.
+3. Decide what triggers requests for the overlay (session auto-mode, hotkey
+   ask, etc.).
 
 ## Security model
 

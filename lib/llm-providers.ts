@@ -56,21 +56,25 @@ function extractAnthropicContent(payload: unknown): string {
 async function* streamAnthropicResponse(
     request: LLMRequest
 ): AsyncGenerator<string> {
-    // Zen exposes Anthropic-protocol models under its own /messages route.
-    const isZen = request.provider === "zen";
+    // Zen/OpenCode expose Anthropic-protocol models under their own /messages route.
+    const isZen = request.provider === "zen" || request.provider === "opencode-cli";
+    // Claude Code subscription auth: OAuth bearer token against the public API
+    // (requires the oauth beta header; x-api-key must NOT be sent).
+    const isClaudeCli = request.provider === "claude-cli";
     const url = isZen
-        ? `${getBaseUrl("zen", request.baseUrl)}/messages`
+        ? `${getBaseUrl(request.provider, request.baseUrl)}/messages`
         : "https://api.anthropic.com/v1/messages";
 
     const headers: Record<string, string> = {
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     };
-    if (isZen) {
-        headers["x-api-key"] = request.apiKey;
+    if (isClaudeCli) {
         headers["Authorization"] = `Bearer ${request.apiKey}`;
+        headers["anthropic-beta"] = "oauth-2025-04-20";
     } else {
         headers["x-api-key"] = request.apiKey;
+        if (isZen) headers["Authorization"] = `Bearer ${request.apiKey}`;
     }
 
     const response = await fetch(url, {
@@ -154,7 +158,8 @@ async function* streamOpenAICompatibleResponse(
         request.provider === "lmstudio" ||
         request.provider === "groq" ||
         request.provider === "cerebras" ||
-        request.provider === "zen";
+        request.provider === "zen" ||
+        request.provider === "opencode-cli";
     const userContent =
         request.imageDataUrl && supportsImageInput
             ? [
@@ -255,6 +260,102 @@ async function* streamOpenAICompatibleResponse(
     }
 }
 
+/**
+ * Stream from the ChatGPT backend that the Codex CLI authenticates against
+ * (`codex login` subscription). Speaks the OpenAI Responses protocol over
+ * SSE — not chat completions — so events are translated into text deltas.
+ */
+async function* streamCodexCliResponse(
+    request: LLMRequest
+): AsyncGenerator<string> {
+    const url = "https://chatgpt.com/backend-api/codex/responses";
+    const headers: Record<string, string> = {
+        "Authorization": `Bearer ${request.apiKey}`,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    };
+    if (request.accountId) {
+        headers["chatgpt-account-id"] = request.accountId;
+    }
+
+    const userContent = request.imageDataUrl
+        ? [
+              { type: "input_text", text: request.userMessage },
+              { type: "input_image", image_url: request.imageDataUrl },
+          ]
+        : request.userMessage;
+
+    // store:false keeps the exchange out of ChatGPT training/history;
+    // encrypted reasoning content must be echoed back on multi-turn use.
+    const requestBody = {
+        model: request.model,
+        instructions: request.systemPrompt,
+        input: [{ role: "user", content: userContent }],
+        stream: true,
+        store: false,
+        tools: [],
+        reasoning: { effort: "low", summary: "auto" },
+        include: ["reasoning.encrypted_content"],
+    };
+
+    const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: request.signal,
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Codex API error ${response.status}: ${errorText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (!data || data === "[DONE]") continue;
+
+            let parsed: {
+                type?: string;
+                delta?: string;
+                response?: { error?: { message?: string } | null };
+                message?: string;
+            };
+            try {
+                parsed = JSON.parse(data);
+            } catch {
+                continue;
+            }
+
+            if (parsed.type === "response.output_text.delta" && parsed.delta) {
+                yield parsed.delta;
+            } else if (parsed.type === "response.failed") {
+                throw new Error(
+                    parsed.response?.error?.message || "Codex request failed"
+                );
+            } else if (parsed.type === "error") {
+                throw new Error(parsed.message || "Codex stream error");
+            } else if (parsed.type === "response.completed") {
+                return;
+            }
+        }
+    }
+}
+
 function getBaseUrl(provider: LLMProvider, customBaseUrl?: string): string {
     switch (provider) {
         case "openai":
@@ -264,6 +365,7 @@ function getBaseUrl(provider: LLMProvider, customBaseUrl?: string): string {
         case "cerebras":
             return "https://api.cerebras.ai/v1";
         case "zen":
+        case "opencode-cli":
             return customBaseUrl || "https://opencode.ai/zen/v1";
         case "lmstudio":
             return customBaseUrl || "http://localhost:1234/v1";
@@ -277,9 +379,14 @@ export async function* streamLLMResponse(
 ): AsyncGenerator<string> {
     switch (request.provider) {
         case "anthropic":
+        case "claude-cli":
             yield* streamAnthropicResponse(request);
             break;
+        case "codex-cli":
+            yield* streamCodexCliResponse(request);
+            break;
         case "zen":
+        case "opencode-cli":
             // Zen serves Claude/Qwen families over the Anthropic /messages
             // protocol; everything else speaks OpenAI chat completions.
             if (/^(claude|qwen)/i.test(request.model)) {
@@ -287,7 +394,7 @@ export async function* streamLLMResponse(
             } else {
                 yield* streamOpenAICompatibleResponse(
                     request,
-                    getBaseUrl("zen", request.baseUrl)
+                    getBaseUrl(request.provider, request.baseUrl)
                 );
             }
             break;

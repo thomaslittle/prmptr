@@ -107,15 +107,6 @@ export async function endSession(): Promise<{ duration_secs: number; response_co
 
 // ─── LLM Commands ───
 
-export async function triggerLlm(apiKey?: string, baseUrl?: string): Promise<void> {
-    if (!isTauri()) throw new Error("Tauri LLM trigger requires Tauri");
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("trigger_llm", {
-        apiKey: apiKey ?? null,
-        baseUrl: baseUrl ?? null,
-    });
-}
-
 export async function validateApiKey(
     provider: string,
     apiKey: string,
@@ -474,23 +465,6 @@ export async function onLocalTranscription(
 // ─── Event Listeners ───
 
 export type UnlistenFn = () => void;
-
-export interface StreamToken {
-    text: string;
-    is_complete: boolean;
-    usage: { input_tokens?: number; output_tokens?: number } | null;
-}
-
-export async function onResponseStream(
-    callback: (token: StreamToken) => void
-): Promise<UnlistenFn> {
-    if (!isTauri()) return () => {};
-    const { listen } = await import("@tauri-apps/api/event");
-    const unlisten = await listen<StreamToken>("response-stream", (event) => {
-        callback(event.payload);
-    });
-    return unlisten;
-}
 
 export async function onScreenpipeStatus(
     callback: (status: { running: boolean; healthy: boolean; message: string }) => void

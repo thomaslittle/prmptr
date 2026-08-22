@@ -187,140 +187,99 @@ pub async fn clear_transcript(
 
 // ──────────────────────────── LLM Commands ────────────────────────────
 
+fn openai_compatible_base(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai" => Some("https://api.openai.com/v1"),
+        "groq" => Some("https://api.groq.com/openai/v1"),
+        "cerebras" => Some("https://api.cerebras.ai/v1"),
+        // OpenCode Zen exposes an OpenAI-compatible /v1 surface.
+        "zen" => Some("https://opencode.ai/zen/v1"),
+        _ => None,
+    }
+}
+
+fn normalize_lmstudio_base(base_url: Option<String>) -> String {
+    let raw = base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string());
+    let trimmed = raw.trim().trim_end_matches('/').to_string();
+    if trimmed.ends_with("/v1") {
+        trimmed
+    } else {
+        format!("{trimmed}/v1")
+    }
+}
+
+async fn validate_openai_compatible(base: &str, api_key: &str) -> Result<bool, String> {
+    let mut req = reqwest::Client::new().get(format!("{base}/models"));
+    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"));
+    let resp = req.send().await.map_err(|e| format!("Validation failed: {e}"))?;
+    Ok(resp.status().is_success())
+}
+
 #[tauri::command]
 pub async fn validate_api_key(
     provider: String,
     api_key: String,
     base_url: Option<String>,
 ) -> Result<bool, String> {
-    use crate::llm::provider::LlmProvider;
-
-    let client: Box<dyn LlmProvider> = match provider.as_str() {
-        "anthropic" => Box::new(crate::llm::anthropic::AnthropicClient::new(api_key)),
-        "openai" => Box::new(crate::llm::openai::OpenAICompatibleClient::new(
-            Some(api_key),
-            "https://api.openai.com/v1".to_string(),
-            "openai".to_string(),
-        )),
-        "groq" => Box::new(crate::llm::groq::new_groq_client(api_key)),
-        "cerebras" => Box::new(crate::llm::cerebras::new_cerebras_client(api_key)),
-        // OpenCode Zen exposes an OpenAI-compatible /v1 surface.
-        "zen" => Box::new(crate::llm::openai::OpenAICompatibleClient::new(
-            Some(api_key),
-            "https://opencode.ai/zen/v1".to_string(),
-            "zen".to_string(),
-        )),
-        "lmstudio" => Box::new(crate::llm::lmstudio::new_lmstudio_client(base_url)),
-        _ => return Err(format!("Unknown provider: {}", provider)),
-    };
-
-    client.validate().await
+    match provider.as_str() {
+        "anthropic" => {
+            let resp = reqwest::Client::new()
+                .post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&serde_json::json!({
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}],
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("Validation failed: {e}"))?;
+            Ok(resp.status().is_success())
+        }
+        "openai" | "groq" | "cerebras" | "zen" => {
+            validate_openai_compatible(openai_compatible_base(&provider).unwrap(), &api_key).await
+        }
+        "lmstudio" => {
+            let base = normalize_lmstudio_base(base_url);
+            let resp = reqwest::Client::new()
+                .get(format!("{base}/models"))
+                .send()
+                .await
+                .map_err(|e| format!("Validation failed: {e}"))?;
+            Ok(resp.status().is_success())
+        }
+        _ => Err(format!("Unknown provider: {provider}")),
+    }
 }
 
 #[tauri::command]
 pub async fn fetch_lmstudio_models(
     base_url: Option<String>,
 ) -> Result<Vec<String>, String> {
-    use crate::llm::provider::LlmProvider;
-    let client = crate::llm::lmstudio::new_lmstudio_client(base_url);
-    client.list_models().await
-}
-
-#[tauri::command]
-pub async fn trigger_llm(
-    app: tauri::AppHandle,
-    session: State<'_, Arc<Mutex<SessionManager>>>,
-    transcript: State<'_, Arc<Mutex<TranscriptBuffer>>>,
-    api_key: Option<String>,
-    base_url: Option<String>,
-) -> Result<(), String> {
-    use crate::llm::provider::{LlmProvider, LlmRequest, StreamToken};
-    use crate::llm::prompt_builder;
-
-    let (config, buf_text) = {
-        let sess = session.lock().await;
-        if !sess.active {
-            return Err("No active session".to_string());
-        }
-        let buf = transcript.lock().await;
-        (sess.config.clone(), buf.formatted_text())
-    };
-
-    if buf_text.is_empty() {
-        return Err("No transcript data".to_string());
+    let base = normalize_lmstudio_base(base_url);
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/models"))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to list models: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
     }
-
-    let system_prompt = prompt_builder::build_system_prompt(
-        &config.context,
-        match config.response_style {
-            crate::session::manager::ResponseStyle::Concise => "concise",
-            crate::session::manager::ResponseStyle::Detailed => "detailed",
-            crate::session::manager::ResponseStyle::AiVoice => "ai-voice",
-        },
-        match config.trigger_mode {
-            crate::session::manager::TriggerMode::Auto => "auto",
-            crate::session::manager::TriggerMode::Manual => "manual",
-            crate::session::manager::TriggerMode::Continuous => "continuous",
-        },
-    );
-
-    let buf = transcript.lock().await;
-    let user_message = prompt_builder::build_user_message(&buf);
-    drop(buf);
-
-    let request = LlmRequest {
-        system_prompt,
-        user_message,
-        model: config.model.clone(),
-        max_tokens: config.max_tokens,
-        temperature: config.temperature,
-    };
-
-    let client: Box<dyn LlmProvider> = match config.provider.as_str() {
-        "anthropic" => {
-            let key = api_key.ok_or("Anthropic API key required")?;
-            Box::new(crate::llm::anthropic::AnthropicClient::new(key))
-        }
-        "openai" => {
-            let key = api_key.ok_or("OpenAI API key required")?;
-            Box::new(crate::llm::openai::OpenAICompatibleClient::new(
-                Some(key),
-                "https://api.openai.com/v1".to_string(),
-                "openai".to_string(),
-            ))
-        }
-        "groq" => {
-            let key = api_key.ok_or("Groq API key required")?;
-            Box::new(crate::llm::groq::new_groq_client(key))
-        }
-        "cerebras" => {
-            let key = api_key.ok_or("Cerebras API key required")?;
-            Box::new(crate::llm::cerebras::new_cerebras_client(key))
-        }
-        "lmstudio" => {
-            Box::new(crate::llm::lmstudio::new_lmstudio_client(base_url))
-        }
-        _ => return Err(format!("Unknown provider: {}", config.provider)),
-    };
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamToken>(100);
-
-    let app_handle = app.clone();
-    tokio::spawn(async move {
-        let mut full_response = String::new();
-        while let Some(token) = rx.recv().await {
-            if !token.text.is_empty() {
-                full_response.push_str(&token.text);
-            }
-            let _ = app_handle.emit("response-stream", &token);
-            if token.is_complete {
-                break;
-            }
-        }
-    });
-
-    client.stream_response(request, tx).await?;
-    Ok(())
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse models: {e}"))?;
+    Ok(data
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 // ──────────────────────────── Local Whisper Commands ────────────────────────────

@@ -62,7 +62,18 @@ export interface ScreenpipeResponse {
 // LLM Types
 // ============================================================
 
-export type LLMProvider = "anthropic" | "openai" | "groq" | "lmstudio" | "cerebras" | "zen";
+export type LLMProvider =
+    | "anthropic"
+    | "openai"
+    | "groq"
+    | "lmstudio"
+    | "cerebras"
+    | "zen"
+    // Local CLI subscription providers (credentials resolved server-side from
+    // the user's logged-in coding CLIs; see lib/cli-providers.ts).
+    | "claude-cli"
+    | "codex-cli"
+    | "opencode-cli";
 
 export interface ModelDef {
     id: string;
@@ -83,14 +94,11 @@ export interface LLMRequest {
     provider: LLMProvider;
     apiKey: string;
     baseUrl?: string;
+    /** Codex CLI ChatGPT-backend account id (sent as chatgpt-account-id). */
+    accountId?: string;
     maxTokens?: number;
     temperature?: number;
     signal?: AbortSignal;
-}
-
-export interface StreamToken {
-    text: string;
-    isComplete: boolean;
 }
 
 // ============================================================
@@ -248,7 +256,15 @@ export interface AppSettings {
         groq?: string;
         cerebras?: string;
         zen?: string;
+        "claude-cli"?: string;
+        "codex-cli"?: string;
+        "opencode-cli"?: string;
     };
+    /**
+     * Opt-out flags for detected local CLI subscriptions. Detected + logged-in
+     * CLIs are usable by default; `false` hides that provider's models.
+     */
+    cliSubscriptions?: Partial<Record<"claude-cli" | "codex-cli" | "opencode-cli", boolean>>;
     defaultProvider: LLMProvider;
     defaultModel: string;
     shortcuts: ShortcutConfig;
@@ -352,6 +368,56 @@ export const MODELS: ModelDef[] = [
         speed: "blazing",
         description: "Ultra-fast, lowest cost",
         maxTokens: 8192,
+    },
+    // Claude Code subscription (OAuth via logged-in `claude` CLI)
+    {
+        id: "claude-sonnet-4-5-20250929",
+        name: "Claude Sonnet 4.5 (subscription)",
+        provider: "claude-cli",
+        speed: "fast",
+        description: "Uses your Claude subscription — no API key",
+        maxTokens: 8192,
+    },
+    {
+        id: "claude-haiku-4-5-20251001",
+        name: "Claude Haiku 4.5 (subscription)",
+        provider: "claude-cli",
+        speed: "blazing",
+        description: "Fastest Claude, uses your subscription",
+        maxTokens: 8192,
+    },
+    {
+        id: "claude-opus-4-5-20250918",
+        name: "Claude Opus 4.5 (subscription)",
+        provider: "claude-cli",
+        speed: "moderate",
+        description: "Most capable Claude, uses your subscription",
+        maxTokens: 8192,
+    },
+    // Codex / ChatGPT subscription
+    {
+        id: "gpt-5-codex",
+        name: "GPT-5-Codex (ChatGPT)",
+        provider: "codex-cli",
+        speed: "fast",
+        description: "Uses your ChatGPT subscription via Codex CLI",
+        maxTokens: 8192,
+    },
+    {
+        id: "gpt-5",
+        name: "GPT-5 (ChatGPT)",
+        provider: "codex-cli",
+        speed: "fast",
+        description: "General GPT-5 via your ChatGPT subscription",
+        maxTokens: 8192,
+    },
+    {
+        id: "gpt-5-mini",
+        name: "GPT-5 Mini (ChatGPT)",
+        provider: "codex-cli",
+        speed: "blazing",
+        description: "Lightweight ChatGPT-subscription model",
+        maxTokens: 4096,
     },
     // Groq
     {

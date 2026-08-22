@@ -27,6 +27,8 @@ const shortState = (state: string) =>
 import { usePanelRef } from "react-resizable-panels";
 import type { Layout } from "react-resizable-panels";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { useCliSubscriptions, activeCliSubscriptions } from "@/lib/use-cli-subscriptions";
+import type { LLMProvider } from "@/lib/types";
 import { useSessionStore } from "@/lib/stores/session-store";
 import { useSessionHistory } from "@/hooks/use-session-history";
 import { useScreenpipeFeed, useScreenpipeHealth } from "@/hooks/use-screenpipe";
@@ -70,7 +72,11 @@ import { LOCAL_SHERPA_TTS_ENDPOINT, playTtsUrl, synthesizeTts, toRealtimeSpeakTe
 
 /** Logo mark — Phosphor Ear icon flipped horizontally */
 function LogoMark({ className }: { className?: string }) {
-    return <Ear weight="regular" className={cn("-scale-x-100 text-yellow-400", className)} aria-hidden="true" />;
+    return (
+        <svg viewBox="0 0 32 32" width="1em" height="1em" className={cn("text-yellow-400", className)} aria-hidden="true">
+            <path fill="currentColor" d="m5 13q0 0.4 0.3 0.7 0.3 0.3 0.7 0.3 0.4 0 0.7-0.3 0.3-0.3 0.3-0.7c0-2.4 0.9-4.7 2.6-6.4 1.7-1.7 4-2.6 6.4-2.6 2.4 0 4.7 0.9 6.4 2.6 1.7 1.7 2.6 4 2.6 6.4 0 3.3-1.1 4.4-2.2 5.5-1.1 1-2.3 2.2-2.3 5q0 0.9-0.3 1.7-0.4 0.8-1 1.5-0.7 0.6-1.5 1-0.8 0.3-1.7 0.3c-1.3 0-2.3-0.5-3.2-1.6q-0.3-0.4-0.7-0.4-0.4 0-0.7 0.2-0.4 0.3-0.4 0.7 0 0.4 0.2 0.7 2 2.4 4.8 2.4 1.3 0 2.5-0.5 1.2-0.5 2.1-1.4 0.9-0.9 1.4-2.1 0.5-1.2 0.5-2.5c0-2 0.7-2.7 1.7-3.6 1.2-1.2 2.8-2.7 2.8-6.9 0-2.9-1.2-5.7-3.2-7.8-2.1-2-4.9-3.2-7.8-3.2-2.9 0-5.7 1.2-7.8 3.2-2 2.1-3.2 4.9-3.2 7.8zm4.8 7.1q0.1-0.1 0.3-0.1 0.2 0 0.4 0 0.2 0.1 0.4 0.2 0.1 0.1 0.2 0.3 0.2 0.3 0.5 0.4 0.3 0.2 0.7 0.1 0.3-0.1 0.5-0.4 0.2-0.3 0.2-0.6c0-1.2-0.6-2-1.3-2.9-0.8-1.1-1.7-2.3-1.7-4.1 0-1.6 0.6-3.1 1.8-4.2 1.1-1.2 2.6-1.8 4.2-1.8 1.6 0 3.1 0.6 4.2 1.8 1.2 1.1 1.8 2.6 1.8 4.2q0 0.4-0.3 0.7-0.3 0.3-0.7 0.3-0.4 0-0.7-0.3-0.3-0.3-0.3-0.7c0-1.1-0.4-2.1-1.2-2.8-0.7-0.8-1.7-1.2-2.8-1.2-1.1 0-2.1 0.4-2.8 1.2-0.8 0.7-1.2 1.7-1.2 2.8 0 1.2 0.6 2 1.3 2.9 0.8 1.1 1.7 2.3 1.7 4.1 0 0.7-0.2 1.3-0.6 1.8-0.4 0.5-1 0.9-1.6 1.1-0.7 0.2-1.3 0.1-1.9-0.1-0.7-0.3-1.2-0.7-1.5-1.3q-0.1-0.2-0.1-0.4 0-0.2 0-0.4 0.1-0.1 0.2-0.3 0.1-0.2 0.3-0.3zm10-11.7c1.2 1 2 2.4 2.2 4 0.1 1.6-0.3 3.2-1.3 4.4-1 1.2-2.5 2-4.1 2.2-1.5 0.2-3.1-0.3-4.4-1.3q-0.3-0.3-0.3-0.7-0.1-0.4 0.2-0.7 0.2-0.3 0.7-0.4c0.2 0 0.5 0 0.7 0.2 0.4 0.5 1.9 1 2.9 0.9 1.1-0.1 2-0.6 2.7-1.4 0.7-0.9 1-1.9 0.9-3-0.1-1-0.7-2-1.5-2.7-0.9-0.7-1.3-0.9-2.4-0.9"/>
+        </svg>
+    );
 }
 
 function sourceMatchesDevice(source: string, device?: string): boolean {
@@ -82,6 +88,7 @@ function sourceMatchesDevice(source: string, device?: string): boolean {
 
 export default function Dashboard() {
     const { settings, setSettings, configuredProviders } = useSettingsStore();
+    const cliSubsQuery = useCliSubscriptions();
     const {
         config: sessionConfig,
         setConfig: setSessionConfig,
@@ -740,10 +747,13 @@ export default function Dashboard() {
         onSettingsPanel: useCallback(() => setSettingsOpen((o) => !o), []),
     });
 
-    const providers = useMemo(
-        () => configuredProviders(),
-        [configuredProviders, settings.apiKeys]
-    );
+    const providers = useMemo(() => {
+        const base = configuredProviders();
+        const cli = activeCliSubscriptions(cliSubsQuery.data, settings.cliSubscriptions).map(
+            (sub) => sub.id
+        );
+        return Array.from(new Set<LLMProvider>([...base, ...cli]));
+    }, [configuredProviders, settings.apiKeys, settings.cliSubscriptions, cliSubsQuery.data]);
 
     const isLoading = isLocalWhisper
         ? localWhisperLoading

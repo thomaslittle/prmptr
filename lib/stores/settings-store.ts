@@ -46,6 +46,9 @@ const DEFAULT_SETTINGS: AppSettings = {
     muteOutput: false,
     includeScreenshotOnAnalyze: false,
     localPreferGpu: false,
+    // Detected CLI subscriptions are usable by default; users can opt out
+    // per provider from Settings → Providers.
+    cliSubscriptions: { "claude-cli": true, "codex-cli": true, "opencode-cli": true },
 };
 
 interface SettingsState {

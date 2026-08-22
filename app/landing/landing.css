@@ -1,0 +1,157 @@
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600&display=swap");
+
+.prmptr-page {
+  font-family: Chalet, "Chalet New York Sixty", Outfit, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  .prmptr-page a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+.prmptr-page ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.prmptr-page ::-webkit-scrollbar-track {
+  background: oklch(0.22 0.004 60);
+}
+
+.prmptr-page ::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 18%);
+}
+
+.prmptr-grain {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
+.prmptr-cut-card {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%);
+}
+
+.prmptr-cut-card-inner {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 19px), calc(100% - 19px) 100%, 0 100%);
+}
+
+.prmptr-window-cut {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 22px), calc(100% - 22px) 100%, 0 100%);
+}
+
+.prmptr-window-cut-inner {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 21px), calc(100% - 21px) 100%, 0 100%);
+}
+
+.prmptr-small-cut {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%);
+}
+
+.prmptr-small-cut-inner {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 13px), calc(100% - 13px) 100%, 0 100%);
+}
+
+.prmptr-cut-button-wrap {
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.prmptr-cut-button-wrap:hover {
+  transform: translateY(-3px);
+}
+
+.prmptr-cut-button-wrap:active {
+  transform: translateY(-1px) scale(0.985);
+}
+
+.prmptr-cut-button {
+  clip-path: polygon(0 0, calc(100% - 13px) 0, 100% 13px, 100% 100%, 13px 100%, 0 calc(100% - 13px));
+  transition:
+    background-color 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    color 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: background-color, color;
+}
+
+.prmptr-nav-button-wrap {
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.prmptr-nav-button-wrap:hover {
+  transform: translateY(-1.5px);
+}
+
+.prmptr-nav-button-wrap:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.prmptr-nav-button {
+  clip-path: polygon(0 0, calc(100% - 11px) 0, 100% 11px, 100% 100%, 11px 100%, 0 calc(100% - 11px));
+  transition:
+    background-color 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    color 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: background-color, color;
+}
+
+@keyframes prmptr-rise {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes prmptr-tick {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes prmptr-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes prmptr-wave {
+  0%, 100% { transform: scaleY(0.14); }
+  50% { transform: scaleY(1); }
+}
+
+.prmptr-rise {
+  opacity: 0;
+  animation: prmptr-rise 0.7s cubic-bezier(.22, 1, .36, 1) forwards;
+}
+
+.prmptr-rise-delay-1 { animation-delay: 110ms; }
+.prmptr-rise-delay-2 { animation-delay: 200ms; }
+.prmptr-ticker { animation: prmptr-tick 44s linear infinite; }
+.prmptr-pulse { animation: prmptr-pulse 1.6s ease-in-out infinite; }
+.prmptr-wave { animation-name: prmptr-wave; animation-timing-function: ease-in-out; animation-iteration-count: infinite; }
+
+.prmptr-reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.6s cubic-bezier(.22, 1, .36, 1), transform 0.6s cubic-bezier(.22, 1, .36, 1);
+}
+
+.prmptr-reveal[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prmptr-page *,
+  .prmptr-page *::before,
+  .prmptr-page *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .prmptr-reveal,
+  .prmptr-rise {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

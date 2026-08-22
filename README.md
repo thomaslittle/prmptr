@@ -105,5 +105,6 @@ docs/           Architecture notes
 ```
 
 Before changing LLM-related code, read [docs/architecture.md](docs/architecture.md) —
-there are two LLM stacks (TS canonical, Rust legacy for the overlay) and the
-doc explains what that means.
+all provider traffic goes through one TS stack (`lib/llm-providers.ts` via
+`/api/llm`); the legacy Rust LLM path was removed in 2026-08. The always-on-top
+overlay window is a planned future feature, not yet wired up.

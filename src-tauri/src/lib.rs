@@ -1,6 +1,5 @@
 pub mod commands;
 pub mod errors;
-pub mod llm;
 pub mod screenpipe;
 pub mod session;
 pub mod state;
@@ -71,7 +70,6 @@ pub fn run() {
             commands::clear_transcript,
             commands::validate_api_key,
             commands::fetch_lmstudio_models,
-            commands::trigger_llm,
             commands::load_templates,
             commands::list_system_audio_devices,
             commands::list_whisper_models,

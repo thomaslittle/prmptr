@@ -17,6 +17,7 @@ import { buildSystemPrompt, buildUserMessage, buildChatPrompt, truncateFeedItems
 import { selectBestSpokenLine } from "@/lib/spoken-line";
 import { normalizeGluedMarkdown } from "@/lib/markdown-normalize";
 import { isTauri, captureNativeScreenshotViaTauri } from "@/lib/tauri";
+import { isCliSubscriptionProvider, CliSubscriptionId } from "@/lib/cli-providers";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,6 +70,12 @@ function modelSupportsImageInput(provider: LLMProvider, model: string): boolean 
     if (provider === "lmstudio" || provider === "openai") {
         return hasVisionMarker || /(gpt-4o|gpt-4\.1)/.test(id);
     }
+
+    // CLI subscriptions: Claude models are all vision-capable; Codex gpt-5
+    // family accepts input_image; OpenCode mirrors the Zen heuristics.
+    if (provider === "claude-cli") return true;
+    if (provider === "codex-cli") return true;
+    if (provider === "opencode-cli") return hasVisionMarker;
 
     // Groq/Cerebras support depends on the selected model; only send when model appears multimodal.
     if (provider === "groq" || provider === "cerebras") {
@@ -134,6 +141,11 @@ function isRateLimitMessage(msg: string): boolean {
 
 function fallbackModelForProvider(provider: "groq" | "cerebras"): string {
     return provider === "groq" ? "llama-3.1-8b-instant" : "llama-3.1-8b";
+}
+
+/** CLI subscription providers resolve credentials server-side — no key needed. */
+function providerNeedsApiKey(provider: LLMProvider): boolean {
+    return provider !== "lmstudio" && !isCliSubscriptionProvider(provider);
 }
 
 async function streamFromLLMOnce(
@@ -583,9 +595,9 @@ export default function AiResponse({
         const keys = apiKeysRef.current;
         const lmUrl = lmstudioUrlRef.current;
         const isLmStudio = config.provider === "lmstudio";
-        const apiKey = isLmStudio
+        const apiKey = isLmStudio || isCliSubscriptionProvider(config.provider)
             ? ""
-            : keys[config.provider as Exclude<LLMProvider, "lmstudio">] || "";
+            : keys[config.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>] || "";
         const lmBaseUrl = (() => {
             const raw = (lmUrl || "http://localhost:1234").trim().replace(/\/+$/, "");
             return raw.endsWith("/v1") ? raw : `${raw}/v1`;
@@ -673,10 +685,10 @@ export default function AiResponse({
 
         const isLmStudio = config.provider === "lmstudio";
         const apiKey =
-            config.provider === "lmstudio"
+            isLmStudio || isCliSubscriptionProvider(config.provider)
                 ? ""
-                : keys[config.provider as Exclude<LLMProvider, "lmstudio">];
-        if (!isLmStudio && !apiKey) {
+                : keys[config.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>];
+        if (providerNeedsApiKey(config.provider) && !apiKey) {
             setStatusMessage(`No API key for ${config.provider}`);
             return;
         }
@@ -918,10 +930,10 @@ export default function AiResponse({
         const keys = apiKeysRef.current;
         const isLmStudio = config.provider === "lmstudio";
         const apiKey =
-            config.provider === "lmstudio"
+            isLmStudio || isCliSubscriptionProvider(config.provider)
                 ? ""
-                : keys[config.provider as Exclude<LLMProvider, "lmstudio">];
-        if (!isLmStudio && !apiKey) {
+                : keys[config.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>];
+        if (providerNeedsApiKey(config.provider) && !apiKey) {
             setStatusMessage(`No API key for ${config.provider}`);
             return;
         }
@@ -1086,8 +1098,8 @@ export default function AiResponse({
     }, [clearCount, clearAll]);
 
     const hasApiKey =
-        sessionConfig.provider === "lmstudio" ||
-        !!apiKeys[sessionConfig.provider as Exclude<LLMProvider, "lmstudio">];
+        !providerNeedsApiKey(sessionConfig.provider) ||
+        !!apiKeys[sessionConfig.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>];
     const plainAiVoiceOutput = sessionConfig.responseStyle === "ai-voice";
 
     return (

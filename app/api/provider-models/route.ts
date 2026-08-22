@@ -1,9 +1,11 @@
 import { NextRequest } from "next/server";
 import { rejectUntrustedRequest, localHttpBaseUrl } from "@/lib/api-guard";
+import { CODEX_CLI_MODELS, CliSubscriptionId } from "@/lib/cli-providers";
+import { resolveCliCredential } from "@/lib/cli-providers-server";
 
 export const dynamic = "force-dynamic";
 
-type Provider = "anthropic" | "openai" | "groq" | "cerebras" | "lmstudio" | "zen";
+type Provider = "anthropic" | "openai" | "groq" | "cerebras" | "lmstudio" | "zen" | CliSubscriptionId;
 
 type ProviderModel = {
     id: string;
@@ -70,11 +72,18 @@ async function fetchOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Pr
     );
 }
 
-async function fetchAnthropicModels(apiKey: string): Promise<ProviderModel[]> {
+async function fetchAnthropicModels(apiKey: string, opts?: { bearer?: boolean }): Promise<ProviderModel[]> {
+    const headers: Record<string, string> = opts?.bearer
+        ? // OAuth (Claude Code subscription) auth instead of x-api-key.
+          {
+              Authorization: `Bearer ${apiKey}`,
+              "anthropic-beta": "oauth-2025-04-20",
+          }
+        : { "x-api-key": apiKey };
     const resp = await fetch("https://api.anthropic.com/v1/models", {
         method: "GET",
         headers: {
-            "x-api-key": apiKey,
+            ...headers,
             "anthropic-version": "2023-06-01",
         },
         signal: AbortSignal.timeout(15_000),
@@ -141,6 +150,28 @@ export async function POST(request: NextRequest) {
         if (provider === "anthropic") {
             if (!body.apiKey) models = [];
             else models = await fetchAnthropicModels(body.apiKey);
+        } else if (provider === "claude-cli") {
+            // Claude Code subscription — OAuth bearer against the same API.
+            const cred = await resolveCliCredential("claude-cli");
+            if (!cred) models = [];
+            else {
+                models = await fetchAnthropicModels(cred.token, { bearer: true });
+                // The models endpoint may reject OAuth tokens; fall back to a
+                // static catalog so the picker stays usable.
+                if (models.length === 0) {
+                    models = [
+                        { id: "claude-opus-4-5-20250918", supportsImageInput: true },
+                        { id: "claude-sonnet-4-5-20250929", supportsImageInput: true },
+                        { id: "claude-haiku-4-5-20251001", supportsImageInput: true },
+                    ];
+                }
+            }
+        } else if (provider === "codex-cli") {
+            const cred = await resolveCliCredential("codex-cli");
+            models = cred ? CODEX_CLI_MODELS.map((m) => ({ ...m })) : [];
+        } else if (provider === "opencode-cli") {
+            const cred = await resolveCliCredential("opencode-cli");
+            models = cred ? await fetchZenModels(cred.token) : [];
         } else if (provider === "openai") {
             if (!body.apiKey) models = [];
             else models = await fetchOpenAiCompatibleModels("https://api.openai.com/v1", body.apiKey);

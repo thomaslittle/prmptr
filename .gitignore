@@ -65,3 +65,6 @@ tauri-dev.log
 tauri-build.log
 
 dev-server.log
+
+*.bak
+tauri-build.log
