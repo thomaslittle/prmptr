@@ -357,6 +357,7 @@ export default memo(function SessionConfigPanel({
                                             {renamingId === session.id ? (
                                                 <input
                                                     autoFocus
+                                                    aria-label="Rename session"
                                                     className="text-xs bg-transparent border-b border-primary/50 outline-none py-0 px-0 w-full text-foreground"
                                                     value={renameValue}
                                                     onChange={(e) => setRenameValue(e.target.value)}

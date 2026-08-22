@@ -419,13 +419,3 @@ export const MODELS: ModelDef[] = [
         maxTokens: 4096,
     },
 ];
-
-export function getAvailableModels(
-    configuredProviders: LLMProvider[]
-): ModelDef[] {
-    return MODELS.filter(
-        (m) =>
-            m.provider === "lmstudio" ||
-            configuredProviders.includes(m.provider)
-    );
-}

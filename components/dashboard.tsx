@@ -4,6 +4,26 @@ import { useState, useEffect, useCallback, useRef, useMemo, useSyncExternalStore
 
 const subscribeNoop = () => () => {};
 
+// Pure class-name helpers (module scope — no per-render recreation)
+const pillClass = (state: string, role: "you" | "them") => {
+    if (state === "active") return role === "you"
+        ? "border-primary/45 bg-primary/10 text-primary"
+        : "border-sky-400/45 bg-sky-400/10 text-sky-300";
+    if (state === "muted") return "border-amber-400/45 bg-amber-400/10 text-amber-300";
+    if (state === "offline") return "border-destructive/40 bg-destructive/10 text-destructive/85";
+    if (state === "no-device") return "border-border/80 bg-muted/20 text-muted-foreground/55";
+    return "border-border/90 bg-background text-muted-foreground/75";
+};
+const dotClass = (state: string) => {
+    if (state === "active") return "bg-emerald-400 status-pulse";
+    if (state === "muted") return "bg-amber-400";
+    if (state === "no-device") return "bg-zinc-500";
+    if (state === "offline") return "bg-destructive/80";
+    return "bg-muted-foreground/60";
+};
+const shortState = (state: string) =>
+    state === "no-device" ? "no dev" : state;
+
 import { usePanelRef } from "react-resizable-panels";
 import type { Layout } from "react-resizable-panels";
 import { useSettingsStore } from "@/lib/stores/settings-store";
@@ -798,25 +818,6 @@ export default function Dashboard() {
                     ? "active"
                     : "idle";
 
-    const pillClass = (state: string, role: "you" | "them") => {
-        if (state === "active") return role === "you"
-            ? "border-primary/45 bg-primary/10 text-primary"
-            : "border-sky-400/45 bg-sky-400/10 text-sky-300";
-        if (state === "muted") return "border-amber-400/45 bg-amber-400/10 text-amber-300";
-        if (state === "offline") return "border-destructive/40 bg-destructive/10 text-destructive/85";
-        if (state === "no-device") return "border-border/80 bg-muted/20 text-muted-foreground/55";
-        return "border-border/90 bg-background text-muted-foreground/75";
-    };
-    const dotClass = (state: string) => {
-        if (state === "active") return "bg-emerald-400 status-pulse";
-        if (state === "muted") return "bg-amber-400";
-        if (state === "no-device") return "bg-zinc-500";
-        if (state === "offline") return "bg-destructive/80";
-        return "bg-muted-foreground/60";
-    };
-    const shortState = (state: string) =>
-        state === "no-device" ? "no dev" : state;
-
     return (
         <div className="flex flex-col h-screen bg-background text-foreground noise-bg">
             {/* Header */}
@@ -934,7 +935,7 @@ export default function Dashboard() {
                                 <>
                                     <div className="w-20 h-1 bg-muted overflow-hidden">
                                         <div
-                                            className="h-full bg-primary transition-all duration-300"
+                                            className="h-full bg-primary transition-[width] duration-300"
                                             style={{ width: `${installProgress.percent}%` }}
                                         />
                                     </div>
@@ -1160,3 +1161,4 @@ export default function Dashboard() {
         </div>
     );
 }
+

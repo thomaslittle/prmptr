@@ -53,6 +53,24 @@ type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 type CloudProvider = Exclude<LLMProvider, "lmstudio">;
 
+const cloudProviders: { key: CloudProvider; label: string }[] = [
+    { key: "anthropic", label: "Anthropic" },
+    { key: "openai", label: "OpenAI" },
+    { key: "groq", label: "Groq" },
+    { key: "cerebras", label: "Cerebras" },
+    { key: "zen", label: "OpenCode Zen" },
+];
+const ttsModels = [
+    { value: "model", label: "model (fp32)" },
+    { value: "model_q4", label: "model_q4 (4-bit matmul)" },
+    { value: "model_uint8", label: "model_uint8 (8-bit mixed precision)" },
+    { value: "model_fp16", label: "model_fp16 (fp16)" },
+    { value: "model_q4f16", label: "model_q4f16 (4-bit matmul + fp16)" },
+    { value: "model_uint8f16", label: "model_uint8f16 (mixed precision)" },
+    { value: "model_quantized", label: "model_quantized (8-bit)" },
+    { value: "model_q8f16", label: "model_q8f16 (mixed precision)" },
+];
+
 function titleCaseLabel(s: string): string {
     return s
         .split("_")
@@ -282,23 +300,6 @@ export default memo(function SettingsPanel({
         };
     }, []);
 
-    const cloudProviders: { key: CloudProvider; label: string }[] = [
-        { key: "anthropic", label: "Anthropic" },
-        { key: "openai", label: "OpenAI" },
-        { key: "groq", label: "Groq" },
-        { key: "cerebras", label: "Cerebras" },
-        { key: "zen", label: "OpenCode Zen" },
-    ];
-    const ttsModels = [
-        { value: "model", label: "model (fp32)" },
-        { value: "model_q4", label: "model_q4 (4-bit matmul)" },
-        { value: "model_uint8", label: "model_uint8 (8-bit mixed precision)" },
-        { value: "model_fp16", label: "model_fp16 (fp16)" },
-        { value: "model_q4f16", label: "model_q4f16 (4-bit matmul + fp16)" },
-        { value: "model_uint8f16", label: "model_uint8f16 (mixed precision)" },
-        { value: "model_quantized", label: "model_quantized (8-bit)" },
-        { value: "model_q8f16", label: "model_q8f16 (mixed precision)" },
-    ];
     const fallbackVoiceIds = useMemo(
         () => ["af_heart", "af_bella", "af_nova", "am_adam", "am_michael", "bf_emma", "bm_george"],
         []
@@ -728,7 +729,7 @@ export default memo(function SettingsPanel({
                                                     {moonshineDownloading && moonshineProgress?.total_bytes ? (
                                                         <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
                                                             <div
-                                                                className="h-full bg-primary transition-all"
+                                                                className="h-full bg-primary transition-[width]"
                                                                 style={{ width: `${Math.min(100, moonshineProgress.percent)}%` }}
                                                             />
                                                         </div>
@@ -793,7 +794,7 @@ export default memo(function SettingsPanel({
                                                                     {!!localGpuStatus?.hints?.length && (
                                                                         <ul className="mt-2 space-y-1 list-disc pl-3.5">
                                                                             {localGpuStatus.hints.map((hint, i) => (
-                                                                                <li key={i} className="text-[9px] leading-relaxed text-foreground/75">
+                                                                                <li key={hint.slice(0, 40) + i} className="text-[9px] leading-relaxed text-foreground/75">
                                                                                     {hint}
                                                                                 </li>
                                                                             ))}
@@ -1278,3 +1279,4 @@ export default memo(function SettingsPanel({
         </div>
     );
 });
+

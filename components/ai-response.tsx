@@ -481,14 +481,14 @@ function ResponseContentInner({ content, plain = false }: { content: string; pla
             {sections.map((section, i) => {
                 if (section.type === "text") {
                     return (
-                        <div key={i} className="prose-response text-foreground/60">
+                        <div key={`text-${i}`} className="prose-response text-foreground/60">
                             <Markdown>{section.content}</Markdown>
                         </div>
                     );
                 }
                 const Icon = CATEGORY_ICONS[section.category];
                 return (
-                    <div key={i} className={`response-section response-section--${section.category}`}>
+                    <div key={`${section.category}-${section.label}-${i}`} className={`response-section response-section--${section.category}`}>
                         <div className="response-section-header">
                             <Icon weight="bold" className="response-section-icon" />
                             <span className="response-section-label">{section.label}</span>
@@ -1253,6 +1253,7 @@ export default function AiResponse({
                                 }
                             }}
                             placeholder="Ask about this session..."
+                            aria-label="Ask about this session"
                             disabled={isStreaming || !hasApiKey}
                             className="h-8 w-full min-w-0 rounded-none border border-input bg-transparent px-2.5 py-1 text-xs text-foreground placeholder:text-muted-foreground outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30 focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50"
                         />

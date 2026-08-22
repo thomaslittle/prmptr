@@ -82,6 +82,9 @@ export function useScreenpipeHealth(screenpipeUrl: string) {
             const resp = await fetch(
                 `/api/health?screenpipeUrl=${encodeURIComponent(screenpipeUrl)}`
             );
+            if (!resp.ok) {
+                return { connected: false, message: `Health check failed (${resp.status})` };
+            }
             return resp.json() as Promise<{
                 connected: boolean;
                 message: string;

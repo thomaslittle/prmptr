@@ -28,6 +28,14 @@ function getMarkdown(editor: Editor): string {
     return storage.markdown?.getMarkdown?.() ?? "";
 }
 
+const btnClass = (active: boolean) =>
+    cn(
+        "p-1.5 transition-colors",
+        active
+            ? "text-foreground"
+            : "text-muted-foreground/50 hover:text-foreground"
+    );
+
 export default function ContextEditor({ markdown, onChange }: ContextEditorProps) {
     const editor = useEditor({
         immediatelyRender: false,
@@ -66,14 +74,6 @@ export default function ContextEditor({ markdown, onChange }: ContextEditorProps
     }, [markdown, editor]);
 
     if (!editor) return null;
-
-    const btnClass = (active: boolean) =>
-        cn(
-            "p-1.5 transition-colors",
-            active
-                ? "text-foreground"
-                : "text-muted-foreground/50 hover:text-foreground"
-        );
 
     return (
         <div className="flex flex-col">

@@ -16,7 +16,7 @@
     "@base-ui/react": "^1.1.0",
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-query": "^5.90.21",
-    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "@tauri-apps/plugin-store": "^2.4.2",
     "@tiptap/extension-link": "^3.19.0",
@@ -51,5 +51,8 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.11"
-  }
+  },
+  "license": "MIT",
+  "description": "Real-time AI conversation wingman with local transcription",
+  "repository": "github:thomaslittle/prmptr"
 }
