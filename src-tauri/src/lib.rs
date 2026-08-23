@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod errors;
+pub mod overlay;
 pub mod screenpipe;
 pub mod session;
 pub mod speech;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+use overlay::OverlayManager;
 use screenpipe::manager::ScreenpipeManager;
 use session::manager::SessionManager;
 use speech::deepgram::DirectDeepgramStreamManager;
@@ -26,6 +28,9 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .on_window_event(|window, event| {
+            overlay::handle_window_event(window.app_handle(), window.label(), event);
+        })
         .setup(|app| {
             let screenpipe = Arc::new(Mutex::new(ScreenpipeManager::new()));
             let transcript = Arc::new(Mutex::new(TranscriptBuffer::new(120)));
@@ -37,6 +42,7 @@ pub fn run() {
             app.manage(session.clone());
             app.manage(speech_stream.clone());
             app.manage(direct_deepgram_stream.clone());
+            app.manage(OverlayManager::default());
             let screenpipe_clone = screenpipe.clone();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -65,6 +71,10 @@ pub fn run() {
             commands::get_local_activity, commands::start_direct_deepgram_transcription,
             commands::update_direct_deepgram_transcription, commands::stop_direct_deepgram_transcription,
             commands::set_deepgram_mute,
+            overlay::set_overlay_enabled, overlay::apply_overlay_config,
+            overlay::toggle_overlay_visibility, overlay::hide_overlay,
+            overlay::set_overlay_click_through, overlay::publish_overlay_content,
+            overlay::get_overlay_state,
             speech::commands::start_speech_transcription, speech::commands::stop_speech_transcription,
             speech::commands::set_speech_mute, speech::commands::set_speech_context,
             speech::commands::set_speech_keyterms, speech::commands::set_speech_diarization_enabled,

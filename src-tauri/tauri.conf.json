@@ -24,19 +24,6 @@
         "minHeight": 500,
         "resizable": true,
         "fullscreen": false
-      },
-      {
-        "label": "overlay",
-        "title": "PRMPTR Overlay",
-        "url": "/overlay",
-        "width": 400,
-        "height": 500,
-        "resizable": true,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": true
       }
     ],
     "trayIcon": {
