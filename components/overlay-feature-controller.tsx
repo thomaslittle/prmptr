@@ -92,19 +92,7 @@ export default function OverlayFeatureController() {
                 lastPayloadHash.current = "";
                 setLastError(error instanceof Error ? error.message : String(error));
             });
-    }, [
-        desktopRuntime,
-        preferences.enabled,
-        preferences.maxResponses,
-        preferences.opacity,
-        preferences.fontScale,
-        responses,
-        currentResponse,
-        isStreaming,
-        sessionId,
-        applyRuntime,
-        setLastError,
-    ]);
+    }, [desktopRuntime, preferences.enabled, preferences.maxResponses, preferences.opacity, preferences.fontScale, responses, currentResponse, isStreaming, sessionId, applyRuntime, setLastError]);
 
     const toggleFeature = useCallback(async () => {
         try {
@@ -142,35 +130,30 @@ export default function OverlayFeatureController() {
     useEffect(() => {
         if (!desktopRuntime || !preferences.enabled) return;
         let disposed = false;
-        let registered: string[] = [];
+        const registered: string[] = [];
         void (async () => {
             try {
-                const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
-                const shortcuts = [preferences.toggleShortcut, preferences.clickThroughShortcut];
-                for (const shortcut of shortcuts) {
-                    try {
-                        await unregister(shortcut);
-                    } catch {
-                        // It may not currently be registered by PRMPTR.
-                    }
-                }
-                if (disposed) return;
+                const { register } = await import("@tauri-apps/plugin-global-shortcut");
+                // Never pre-unregister exact bindings: they may belong to the
+                // main app or another optional subsystem. A collision should
+                // surface as an error rather than stealing another shortcut.
                 await register(preferences.toggleShortcut, (event) => {
                     if (String(event.state).toLowerCase() === "pressed") void toggleVisible();
                 });
                 registered.push(preferences.toggleShortcut);
+                if (disposed) return;
                 await register(preferences.clickThroughShortcut, (event) => {
                     if (String(event.state).toLowerCase() === "pressed") void toggleClickThrough();
                 });
                 registered.push(preferences.clickThroughShortcut);
             } catch (error) {
-                if (!disposed) setLastError(`Overlay shortcut registration failed: ${error instanceof Error ? error.message : String(error)}`);
+                if (!disposed) setLastError(`Overlay shortcut registration failed (possibly a shortcut conflict): ${error instanceof Error ? error.message : String(error)}`);
             }
         })();
         return () => {
             disposed = true;
-            const cleanup = registered;
-            registered = [];
+            const cleanup = [...registered];
+            registered.length = 0;
             void (async () => {
                 try {
                     const { unregister } = await import("@tauri-apps/plugin-global-shortcut");
@@ -178,7 +161,7 @@ export default function OverlayFeatureController() {
                         try {
                             await unregister(shortcut);
                         } catch {
-                            // best-effort teardown
+                            // best-effort teardown of bindings this controller registered
                         }
                     }
                 } catch {
@@ -226,24 +209,15 @@ export default function OverlayFeatureController() {
                 </div>
             )}
             <div className="flex items-center gap-1 rounded-md border border-border/80 bg-background/90 p-1 shadow-lg backdrop-blur-md">
-                <button
-                    type="button"
-                    onClick={toggleFeature}
-                    className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${preferences.enabled ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"}`}
-                    title={lastError ?? "Optional always-on-top PRMPTR response overlay"}
-                >
+                <button type="button" onClick={toggleFeature} className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${preferences.enabled ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"}`} title={lastError ?? "Optional always-on-top PRMPTR response overlay"}>
                     <span className={`mr-1 inline-block size-1.5 rounded-full ${preferences.enabled ? "bg-emerald-400" : "bg-muted-foreground/40"}`} />
                     Overlay {preferences.enabled ? "on" : "off"}
                 </button>
                 {preferences.enabled && (
                     <>
                         <button type="button" onClick={() => setExpanded((value) => !value)} className="rounded px-2 py-1 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground">Tune</button>
-                        <button type="button" onClick={toggleVisible} className="rounded px-2 py-1 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground" title={`${preferences.toggleShortcut}: show or hide overlay`}>
-                            {visible ? "Hide" : "Show"}
-                        </button>
-                        <button type="button" onClick={toggleClickThrough} className={`rounded px-2 py-1 text-[10px] ${preferences.clickThrough ? "bg-amber-400/10 text-amber-300" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`} title={`${preferences.clickThroughShortcut}: toggle click-through`}>
-                            {preferences.clickThrough ? "Clicks pass" : "Interactive"}
-                        </button>
+                        <button type="button" onClick={toggleVisible} className="rounded px-2 py-1 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground" title={`${preferences.toggleShortcut}: show or hide overlay`}>{visible ? "Hide" : "Show"}</button>
+                        <button type="button" onClick={toggleClickThrough} className={`rounded px-2 py-1 text-[10px] ${preferences.clickThrough ? "bg-amber-400/10 text-amber-300" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`} title={`${preferences.clickThroughShortcut}: toggle click-through`}>{preferences.clickThrough ? "Clicks pass" : "Interactive"}</button>
                     </>
                 )}
             </div>

@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub const OVERLAY_LABEL: &str = "overlay";
 pub const OVERLAY_CONTENT_EVENT: &str = "overlay-content";
@@ -153,7 +153,12 @@ fn ensure_window(app: &tauri::AppHandle, manager: &OverlayManager) -> Result<tau
         return Ok(window);
     }
 
-    let config = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?.config.clone();
+    let config = manager
+        .inner
+        .lock()
+        .map_err(|_| "Overlay state is unavailable".to_string())?
+        .config
+        .clone();
     let mut builder = WebviewWindowBuilder::new(app, OVERLAY_LABEL, WebviewUrl::App("overlay".into()))
         .title("PRMPTR Overlay")
         .inner_size(config.width, config.height)
@@ -174,7 +179,9 @@ fn ensure_window(app: &tauri::AppHandle, manager: &OverlayManager) -> Result<tau
         builder = builder.center();
     }
 
-    let window = builder.build().map_err(|error| format!("Unable to create overlay window: {error}"))?;
+    let window = builder
+        .build()
+        .map_err(|error| format!("Unable to create overlay window: {error}"))?;
     window
         .set_ignore_cursor_events(config.click_through)
         .map_err(|error| format!("Unable to apply overlay click-through state: {error}"))?;
@@ -196,20 +203,30 @@ pub async fn set_overlay_enabled(
 ) -> Result<OverlayRuntimeState, String> {
     let config = config.normalized();
     {
-        let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
+        let mut inner = manager
+            .inner
+            .lock()
+            .map_err(|_| "Overlay state is unavailable".to_string())?;
         inner.enabled = enabled;
         inner.config = config.clone();
     }
 
     if enabled {
         let window = ensure_window(&app, &manager)?;
-        window.set_content_protected(config.capture_protected)
+        window
+            .set_content_protected(config.capture_protected)
             .map_err(|error| format!("Unable to apply overlay capture protection: {error}"))?;
-        window.set_ignore_cursor_events(config.click_through)
+        window
+            .set_ignore_cursor_events(config.click_through)
             .map_err(|error| format!("Unable to apply overlay click-through state: {error}"))?;
-        window.show().map_err(|error| format!("Unable to show overlay: {error}"))?;
+        window
+            .show()
+            .map_err(|error| format!("Unable to show overlay: {error}"))?;
     } else if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        window.destroy().map_err(|error| format!("Unable to destroy overlay: {error}"))?;
+        // Explicit OFF is the only path that destroys the optional WebView.
+        window
+            .destroy()
+            .map_err(|error| format!("Unable to destroy overlay: {error}"))?;
     }
 
     emit_runtime(&app, &manager);
@@ -224,13 +241,18 @@ pub async fn apply_overlay_config(
 ) -> Result<OverlayRuntimeState, String> {
     let config = config.normalized();
     {
-        let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
+        let mut inner = manager
+            .inner
+            .lock()
+            .map_err(|_| "Overlay state is unavailable".to_string())?;
         inner.config = config.clone();
     }
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        window.set_content_protected(config.capture_protected)
+        window
+            .set_content_protected(config.capture_protected)
             .map_err(|error| format!("Unable to apply overlay capture protection: {error}"))?;
-        window.set_ignore_cursor_events(config.click_through)
+        window
+            .set_ignore_cursor_events(config.click_through)
             .map_err(|error| format!("Unable to apply overlay click-through state: {error}"))?;
     }
     emit_runtime(&app, &manager);
@@ -242,22 +264,24 @@ pub async fn toggle_overlay_visibility(
     app: tauri::AppHandle,
     manager: State<'_, OverlayManager>,
 ) -> Result<OverlayRuntimeState, String> {
-    let enabled = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?.enabled;
+    let enabled = manager
+        .inner
+        .lock()
+        .map_err(|_| "Overlay state is unavailable".to_string())?
+        .enabled;
     if !enabled {
-        {
-            let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
-            inner.enabled = true;
-        }
-        let window = ensure_window(&app, &manager)?;
-        window.show().map_err(|error| format!("Unable to show overlay: {error}"))?;
+        return Err("Overlay is disabled. Enable it explicitly before showing it.".to_string());
+    }
+
+    let window = ensure_window(&app, &manager)?;
+    if window.is_visible().unwrap_or(false) {
+        window
+            .hide()
+            .map_err(|error| format!("Unable to hide overlay: {error}"))?;
     } else {
-        let window = ensure_window(&app, &manager)?;
-        let visible = window.is_visible().unwrap_or(false);
-        if visible {
-            window.hide().map_err(|error| format!("Unable to hide overlay: {error}"))?;
-        } else {
-            window.show().map_err(|error| format!("Unable to show overlay: {error}"))?;
-        }
+        window
+            .show()
+            .map_err(|error| format!("Unable to show overlay: {error}"))?;
     }
     emit_runtime(&app, &manager);
     Ok(manager.snapshot(&app))
@@ -269,7 +293,9 @@ pub async fn hide_overlay(
     manager: State<'_, OverlayManager>,
 ) -> Result<OverlayRuntimeState, String> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        window.hide().map_err(|error| format!("Unable to hide overlay: {error}"))?;
+        window
+            .hide()
+            .map_err(|error| format!("Unable to hide overlay: {error}"))?;
     }
     emit_runtime(&app, &manager);
     Ok(manager.snapshot(&app))
@@ -281,13 +307,26 @@ pub async fn set_overlay_click_through(
     manager: State<'_, OverlayManager>,
     enabled: bool,
 ) -> Result<OverlayRuntimeState, String> {
-    {
-        let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
-        inner.config.click_through = enabled;
+    let overlay_enabled = manager
+        .inner
+        .lock()
+        .map_err(|_| "Overlay state is unavailable".to_string())?
+        .enabled;
+    if !overlay_enabled {
+        return Err("Overlay is disabled; click-through has no active runtime.".to_string());
     }
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        window.set_ignore_cursor_events(enabled)
+        window
+            .set_ignore_cursor_events(enabled)
             .map_err(|error| format!("Unable to change overlay click-through state: {error}"))?;
+    }
+    // Persist native state only after the OS call succeeded.
+    {
+        let mut inner = manager
+            .inner
+            .lock()
+            .map_err(|_| "Overlay state is unavailable".to_string())?;
+        inner.config.click_through = enabled;
     }
     emit_runtime(&app, &manager);
     Ok(manager.snapshot(&app))
@@ -300,7 +339,10 @@ pub async fn publish_overlay_content(
     content: OverlayContent,
 ) -> Result<OverlayRuntimeState, String> {
     let (enabled, auto_show) = {
-        let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
+        let mut inner = manager
+            .inner
+            .lock()
+            .map_err(|_| "Overlay state is unavailable".to_string())?;
         inner.content = content.clone();
         (inner.enabled, inner.config.auto_show_on_response)
     };
@@ -309,7 +351,9 @@ pub async fn publish_overlay_content(
         let window = ensure_window(&app, &manager)?;
         let _ = app.emit_to(OVERLAY_LABEL, OVERLAY_CONTENT_EVENT, &content);
         if auto_show && (!content.current_response.trim().is_empty() || !content.responses.is_empty()) {
-            window.show().map_err(|error| format!("Unable to auto-show overlay: {error}"))?;
+            window
+                .show()
+                .map_err(|error| format!("Unable to auto-show overlay: {error}"))?;
         }
     }
     Ok(manager.snapshot(&app))
@@ -351,7 +395,8 @@ mod tests {
             width: 50.0,
             height: 5000.0,
             ..Default::default()
-        }.normalized();
+        }
+        .normalized();
         assert_eq!(config.width, 280.0);
         assert_eq!(config.height, 1000.0);
     }
