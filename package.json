@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit --incremental false",
     "test": "vitest run",
     "test:watch": "vitest",
+    "overlay:guard": "node scripts/check-overlay-greenfield.mjs",
     "speech:benchmark": "node scripts/speech-benchmark.mjs",
     "speech:benchmark:compare": "node scripts/speech-benchmark-compare.mjs",
     "speech:benchmark:test": "node scripts/speech-benchmark.test.mjs && node scripts/speech-benchmark-compare.test.mjs",
