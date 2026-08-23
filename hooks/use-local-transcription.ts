@@ -1,69 +1,53 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useMemo } from "react";
 import { onLocalTranscription } from "@/lib/tauri";
-import type { FeedItem } from "@/lib/types";
+import {
+    legacyLocalResultToTranscriptLine,
+    transcriptLinesToFeedItems,
+} from "@/lib/transcript";
+import { useTranscriptStore } from "@/lib/stores/transcript-store";
+import { useSettingsStore } from "@/lib/stores/settings-store";
 
 export function useLocalTranscription() {
-    const [items, setItems] = useState<FeedItem[]>([]);
+    const lines = useTranscriptStore((state) => state.lines);
+    const upsertLine = useTranscriptStore((state) => state.upsertLine);
+    const clear = useTranscriptStore((state) => state.clear);
 
     useEffect(() => {
         let unlisten: (() => void) | null = null;
 
         onLocalTranscription((result) => {
-            setItems((prev) => {
-                // The current local engines emit a completed utterance as the
-                // durable unit. Keep partial hypotheses out of the feed until
-                // the native streaming path exposes revision-aware lines.
-                if (!result.is_final) {
-                    return prev;
-                }
+            const state = useTranscriptStore.getState();
+            const previous = state.lines.find((line) => line.id === result.id);
+            const settings = useSettingsStore.getState().settings;
+            const engine = settings.localSttEngine ?? "whisper";
+            const model = engine === "moonshine" ? "moonshine-sherpa-base" : "selected-whisper";
 
-                // Helps compare backend realtime transcript logs vs what the feed renders.
-                console.log("[feed-local-transcription]", {
-                    id: result.id,
-                    final: result.is_final,
-                    device: result.device_type,
-                    speakerId: result.speaker_id,
-                    speakerLabel: result.speaker_label,
-                    timestamp: result.timestamp,
-                    text: result.text,
-                });
+            const line = legacyLocalResultToTranscriptLine(
+                result,
+                previous,
+                engine,
+                model
+            );
 
-                const feedItem: FeedItem = {
-                    id: result.id,
-                    type: "audio",
-                    content: result.text,
-                    timestamp: result.timestamp,
-                    source: result.device_type === "input" ? "Microphone" : "System audio",
-                    deviceType: result.device_type,
-                    isFinal: result.is_final,
-                    speaker: result.speaker_id ?? undefined,
-                    speakerLabel: result.speaker_label ?? undefined,
-                };
-
-                // Stable native IDs are revision keys. Update every mutable
-                // transcription field so later speaker/text corrections are
-                // reflected instead of preserving stale metadata forever.
-                const existingIdx = prev.findIndex((i) => i.id === result.id);
-                if (existingIdx >= 0) {
-                    const updated = [...prev];
-                    updated[existingIdx] = {
-                        ...updated[existingIdx],
-                        ...feedItem,
-                    };
-                    return updated;
-                }
-
-                // New item — prepend (newest first)
-                return [feedItem, ...prev];
+            console.log("[canonical-local-transcription]", {
+                id: line.id,
+                revision: line.revision,
+                complete: line.isComplete,
+                track: line.trackId,
+                speakers: line.speakerSpans.map((span) => span.speakerKey),
+                timestamp: line.updatedAt,
+                text: line.text,
             });
+
+            upsertLine(line);
         }).then((fn) => (unlisten = fn));
 
         return () => unlisten?.();
-    }, []);
+    }, [upsertLine]);
 
-    const clear = useCallback(() => setItems([]), []);
+    const items = useMemo(() => transcriptLinesToFeedItems(lines), [lines]);
 
-    return { items, clear };
+    return { items, lines, clear };
 }

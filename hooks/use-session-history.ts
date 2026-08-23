@@ -2,12 +2,13 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { db } from "@/lib/db";
-import type { DBSession } from "@/lib/db";
+import type { DBSession, DBTranscriptLine } from "@/lib/db";
 import type { SessionConfig, SessionSummary, ResponseEntry, FeedItem } from "@/lib/types";
 import {
     feedItemToTranscriptLine,
     type TranscriptLine,
 } from "@/lib/transcript";
+import { useTranscriptStore } from "@/lib/stores/transcript-store";
 
 function generateTitle(config: SessionConfig): string {
     const contextKeywords: Record<string, string> = {
@@ -34,6 +35,27 @@ function generateTitle(config: SessionConfig): string {
     const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const date = now.toLocaleDateString([], { month: "short", day: "numeric" });
     return `${label} — ${date} ${time}`;
+}
+
+function stripSessionId(row: DBTranscriptLine): TranscriptLine {
+    return {
+        id: row.id,
+        revision: row.revision,
+        trackId: row.trackId,
+        role: row.role,
+        engine: row.engine,
+        model: row.model,
+        modelVersion: row.modelVersion,
+        text: row.text,
+        startMs: row.startMs,
+        endMs: row.endMs,
+        isComplete: row.isComplete,
+        words: row.words,
+        speakerSpans: row.speakerSpans,
+        latencyMs: row.latencyMs,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+    };
 }
 
 async function loadSessionSummaries(): Promise<SessionSummary[]> {
@@ -123,12 +145,9 @@ export function useSessionHistory() {
                 (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
             );
 
-            // Existing databases predate canonical transcript storage. Convert
-            // their durable audio feed rows on read so old sessions remain usable
-            // without destructive migration or silently losing speaker identity.
             const transcriptLines: TranscriptLine[] =
                 persistedTranscriptRows.length > 0
-                    ? persistedTranscriptRows.map(({ sessionId: _sessionId, ...line }) => line)
+                    ? persistedTranscriptRows.map(stripSessionId)
                     : feedRows
                           .filter((row) => row.type === "audio")
                           .map((row) =>
@@ -194,9 +213,7 @@ export function useSessionHistory() {
             await db.transaction("rw", db.transcriptLines, async () => {
                 await db.transcriptLines.where("sessionId").equals(sessionId).delete();
                 if (lines.length > 0) {
-                    await db.transcriptLines.bulkAdd(
-                        lines.map((line) => ({ ...line, sessionId }))
-                    );
+                    await db.transcriptLines.bulkAdd(lines.map((line) => ({ ...line, sessionId })));
                 }
             });
         },
@@ -209,31 +226,49 @@ export function useSessionHistory() {
                 await db.feedItems.where("sessionId").equals(sessionId).delete();
                 await db.transcriptLines.where("sessionId").equals(sessionId).delete();
 
-                if (items.length > 0) {
-                    await db.feedItems.bulkAdd(
-                        items.map((item) => ({
-                            id: item.id,
-                            sessionId,
-                            type: item.type,
-                            content: item.content,
-                            timestamp: item.timestamp,
-                            source: item.source,
-                            windowName: item.windowName,
-                            speaker: item.speaker,
-                            speakerLabel: item.speakerLabel,
-                            deviceType: item.deviceType,
-                            isFinal: item.isFinal,
-                        }))
-                    );
+                if (items.length === 0) return;
 
-                    const canonicalAudio = items
-                        .filter((item) => item.type === "audio" && item.isFinal !== false)
-                        .map(feedItemToTranscriptLine);
-                    if (canonicalAudio.length > 0) {
-                        await db.transcriptLines.bulkAdd(
-                            canonicalAudio.map((line) => ({ ...line, sessionId }))
-                        );
-                    }
+                await db.feedItems.bulkAdd(
+                    items.map((item) => ({
+                        id: item.id,
+                        sessionId,
+                        type: item.type,
+                        content: item.content,
+                        timestamp: item.timestamp,
+                        source: item.source,
+                        windowName: item.windowName,
+                        speaker: item.speaker,
+                        speakerLabel: item.speakerLabel,
+                        deviceType: item.deviceType,
+                        isFinal: item.isFinal,
+                    }))
+                );
+
+                // The live local path now has a canonical store. Persist those
+                // stable IDs/revisions directly, then derive only non-local audio
+                // (screenpipe/deepgram/legacy) from display items as a fallback.
+                const liveCanonical = useTranscriptStore
+                    .getState()
+                    .lines.filter((line) => line.isComplete);
+                const fallbackAudio = items
+                    .filter(
+                        (item) =>
+                            item.type === "audio" &&
+                            item.isFinal !== false &&
+                            !item.source.startsWith("whisper /") &&
+                            !item.source.startsWith("moonshine /")
+                    )
+                    .map(feedItemToTranscriptLine);
+
+                const byId = new Map<string, TranscriptLine>();
+                for (const line of [...liveCanonical, ...fallbackAudio]) {
+                    byId.set(line.id, line);
+                }
+                const canonicalAudio = [...byId.values()];
+                if (canonicalAudio.length > 0) {
+                    await db.transcriptLines.bulkAdd(
+                        canonicalAudio.map((line) => ({ ...line, sessionId }))
+                    );
                 }
             });
         },

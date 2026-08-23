@@ -2,7 +2,7 @@
 
 import { memo, useRef, useEffect, useState } from "react";
 import { FeedItem } from "@/lib/types";
-import { Waveform, Monitor, Microphone, CaretLeft } from "@phosphor-icons/react";
+import { Waveform, Monitor, Microphone, CaretLeft, Warning } from "@phosphor-icons/react";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import {
     getSpeakerDiarizationPreference,
@@ -10,6 +10,10 @@ import {
     syncSpeakerDiarizationPreference,
 } from "@/lib/speaker-diarization";
 import { isTauri } from "@/lib/tauri";
+import {
+    getSpeechCapabilities,
+    type SpeechCapabilities,
+} from "@/lib/speech-capabilities";
 
 interface LiveFeedProps {
     items: FeedItem[];
@@ -54,6 +58,7 @@ export default memo(function LiveFeed({
     const bodyRef = useRef<HTMLDivElement>(null);
     const [diarizationEnabled, setDiarizationEnabled] = useState(true);
     const [diarizationBusy, setDiarizationBusy] = useState(false);
+    const [speechCapabilities, setSpeechCapabilities] = useState<SpeechCapabilities | null>(null);
     const desktopRuntime = isTauri();
 
     useEffect(() => {
@@ -69,6 +74,9 @@ export default memo(function LiveFeed({
         syncSpeakerDiarizationPreference(enabled).catch((err) => {
             console.warn("Failed to sync speaker diarization preference", err);
         });
+        getSpeechCapabilities()
+            .then(setSpeechCapabilities)
+            .catch((err) => console.warn("Failed to read speech capabilities", err));
     }, [desktopRuntime]);
 
     const toggleDiarization = async () => {
@@ -87,6 +95,9 @@ export default memo(function LiveFeed({
         }
     };
 
+    const systemCaptureUnavailable =
+        desktopRuntime && speechCapabilities && !speechCapabilities.systemCapture.available;
+
     return (
         <div className="flex flex-col min-h-0 flex-1">
             <div className="flex items-center justify-between px-4 h-10 border-b border-border shrink-0">
@@ -95,6 +106,15 @@ export default memo(function LiveFeed({
                     <span className="text-xs font-medium text-foreground/80">Feed</span>
                 </div>
                 <div className="flex items-center gap-2">
+                    {systemCaptureUnavailable && (
+                        <span
+                            className="flex items-center gap-1 rounded-sm border border-amber-400/30 bg-amber-400/5 px-1.5 py-0.5 text-[9px] font-medium text-amber-300"
+                            title={speechCapabilities.systemCapture.detail}
+                        >
+                            <Warning weight="fill" className="size-2.5" />
+                            System audio unavailable
+                        </span>
+                    )}
                     {desktopRuntime && (
                         <button
                             type="button"
@@ -188,4 +208,3 @@ export default memo(function LiveFeed({
         </div>
     );
 });
-
