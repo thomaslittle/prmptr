@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "suite": "contract-smoke",
+  "engine": {
+    "id": "fixture",
+    "model": "fixture",
+    "modelVersion": "1",
+    "config": {
+      "diarization": true
+    }
+  },
+  "corpus": {
+    "id": "contract-smoke-v1",
+    "description": "Deterministic evaluator fixtures. Replace hypothesis fields with captured engine output for real model comparisons."
+  },
+  "cases": [
+    {
+      "id": "short-you",
+      "category": "intentional-short-utterance",
+      "reference": "you",
+      "hypothesis": "you",
+      "terms": ["you"],
+      "latencyMs": 80,
+      "inferenceMs": 35,
+      "realTimeFactor": 0.08,
+      "droppedSamples": 0
+    },
+    {
+      "id": "short-the",
+      "category": "intentional-short-utterance",
+      "reference": "the",
+      "hypothesis": "the",
+      "terms": ["the"],
+      "latencyMs": 85,
+      "inferenceMs": 32,
+      "realTimeFactor": 0.07,
+      "droppedSamples": 0
+    },
+    {
+      "id": "thank-you",
+      "category": "intentional-short-utterance",
+      "reference": "thank you",
+      "hypothesis": "thank you",
+      "terms": ["thank you"],
+      "latencyMs": 90,
+      "inferenceMs": 38,
+      "realTimeFactor": 0.09,
+      "droppedSamples": 0
+    },
+    {
+      "id": "speaker-turn",
+      "category": "two-speaker",
+      "reference": "Alice can you send that Bob yes I can",
+      "hypothesis": "Alice can you send that Bob yes I can",
+      "terms": ["Alice", "Bob"],
+      "referenceSpeakers": [
+        { "speaker": "1", "text": "Alice can you send that" },
+        { "speaker": "2", "text": "Bob yes I can" }
+      ],
+      "hypothesisSpeakers": [
+        { "speaker": "1", "text": "Alice can you send that" },
+        { "speaker": "2", "text": "Bob yes I can" }
+      ],
+      "latencyMs": 120,
+      "inferenceMs": 55,
+      "realTimeFactor": 0.11,
+      "duplicateCrossChannelRate": 0,
+      "droppedSamples": 0
+    }
+  ]
+}

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit --incremental false",
     "test": "vitest run",
     "test:watch": "vitest",
+    "speech:benchmark": "node scripts/speech-benchmark.mjs",
     "tauri": "tauri",
     "tauri:dev:gpu": "tauri dev --features cuda"
   },
