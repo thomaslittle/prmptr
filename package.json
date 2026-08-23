@@ -12,6 +12,8 @@
     "test:watch": "vitest",
     "overlay:guard": "node scripts/check-overlay-greenfield.mjs",
     "overlay:ready": "npm run overlay:guard && vitest run lib/__tests__/overlay.test.ts && npm run typecheck",
+    "overlay:ready:native": "cargo test --manifest-path src-tauri/Cargo.toml overlay --locked && cargo check --manifest-path src-tauri/Cargo.toml --locked",
+    "overlay:ready:all": "npm run overlay:ready && npm run overlay:ready:native",
     "speech:benchmark": "node scripts/speech-benchmark.mjs",
     "speech:benchmark:compare": "node scripts/speech-benchmark-compare.mjs",
     "speech:benchmark:test": "node scripts/speech-benchmark.test.mjs && node scripts/speech-benchmark-compare.test.mjs",
