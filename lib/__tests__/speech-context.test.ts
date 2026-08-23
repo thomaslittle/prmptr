@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildSpeechBiasContext, extractSpeechKeyterms } from "../speech-context";
+import {
+    buildSpeechBiasContext,
+    extractSpeechKeyterms,
+    normalizeGlossaryTerms,
+} from "../speech-context";
 
- describe("speech context biasing", () => {
+describe("speech context biasing", () => {
     it("prioritizes proper nouns, identifiers, versions, and technical terms", () => {
         const terms = extractSpeechKeyterms(
             "Deploy Kubernetes to GreenfieldAudio with decoder_model.ort and PRMPTR v0.1.2. Kubernetes is the target."
@@ -23,6 +27,27 @@ import { buildSpeechBiasContext, extractSpeechKeyterms } from "../speech-context
         expect(result.context).toContain("Project Zephyr");
         expect(result.context).toContain("Moonshine MediumStreaming settings");
         expect(result.context).not.toContain("do not bias this spoken sentence");
+    });
+
+    it("puts explicit glossary terms ahead of extracted OCR terms", () => {
+        const result = buildSpeechBiasContext({
+            glossary: ["CephFS", "Sarah McAllister"],
+            extraText: "Kubernetes GreenfieldAudio decoder_model.ort",
+            maxTerms: 4,
+        });
+        expect(result.keyterms.slice(0, 2)).toEqual(["CephFS", "Sarah McAllister"]);
+        expect(result.context).toContain("User glossary: CephFS; Sarah McAllister");
+    });
+
+    it("normalizes glossary commas, control whitespace, duplicates, and cardinality", () => {
+        const terms = normalizeGlossaryTerms([
+            " PRMPTR ",
+            "prmptr",
+            "Moonshine, Voice",
+            "Sarah\nMcAllister",
+            "",
+        ]);
+        expect(terms).toEqual(["PRMPTR", "Moonshine Voice", "Sarah McAllister"]);
     });
 
     it("bounds decoder context and keyterm cardinality", () => {

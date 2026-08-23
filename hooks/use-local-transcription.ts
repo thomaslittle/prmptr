@@ -65,10 +65,6 @@ export function useLocalTranscription() {
     const localMoonshineSelected =
         transcriptionMode === "local-whisper" && localSttEngine === "moonshine";
 
-    // Run a dedicated vision-only Screenpipe sidecar while local Moonshine
-    // context biasing is enabled. This process has audio and STT disabled, so
-    // OCR remains available without creating a second speech pipeline or
-    // coupling the context source to the main Screenpipe transcription mode.
     useEffect(() => {
         if (!desktopRuntime() || !localMoonshineSelected || !preferences.contextBiasEnabled) return;
 
@@ -94,8 +90,8 @@ export function useLocalTranscription() {
                             useSpeechContextSourceStore.getState().push(item);
                         }
                     } catch {
-                        // Ignore malformed sidecar events. Context is advisory;
-                        // transcription must stay healthy if OCR is unavailable.
+                        // Context is advisory; malformed OCR events must never
+                        // take down speech capture or transcription.
                     }
                 };
                 eventSource.onerror = () => {
@@ -123,6 +119,7 @@ export function useLocalTranscription() {
             const bias = buildSpeechBiasContext({
                 sessionContext,
                 feedItems: ocrItems,
+                glossary: preferences.glossary,
                 maxTerms: preferences.maxKeyterms,
             });
             const hash = JSON.stringify([bias.context, bias.keyterms, preferences.contextMaxTerms]);
