@@ -29,6 +29,7 @@ for (const required of [
     "window.destroy()",
     "center_overlay",
     "should_auto_show",
+    "allow_auto_show",
     "publish_overlay_content",
 ]) {
     if (!overlayNative.includes(required)) {
@@ -88,6 +89,19 @@ if (!overlayController.includes("Test overlay") || !overlayController.includes("
 if (!overlayController.includes("captureProtectionSupported")) {
     fail("overlay controls must consume effective native capability reporting");
 }
+if (!overlayController.includes("publishLiveSnapshot(false)")) {
+    fail("preview restore must suppress auto-show and respect user-hidden state");
+}
+for (const source of [overlayController, overlayPage, overlayNative]) {
+    if (source.includes("/api/llm") || source.includes("streamFromLLM")) {
+        fail("overlay subsystem must never own or issue an LLM request");
+    }
+}
+
+const overlayApi = read("lib/overlay.ts");
+if (!overlayApi.includes("allowAutoShow = true") || !overlayApi.includes("allowAutoShow")) {
+    fail("overlay content publication must preserve explicit auto-show eligibility");
+}
 
 const capability = JSON.parse(read("src-tauri/capabilities/default.json"));
 if ((capability.permissions ?? []).includes("global-shortcut:allow-unregister-all")) {
@@ -98,5 +112,5 @@ if (!(capability.windows ?? []).includes("overlay")) {
 }
 
 if (!process.exitCode) {
-    console.log("OVERLAY GREENFIELD PASS: optional ownership, live stream bridge, platform capability truth, preview path, state sync, and shortcut isolation guards are intact.");
+    console.log("OVERLAY GREENFIELD PASS: optional ownership, single-stream observation, platform capability truth, preview path, state sync, and shortcut isolation guards are intact.");
 }
