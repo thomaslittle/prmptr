@@ -40,6 +40,9 @@ if (!overlayStore.includes("enabled: false")) {
 if (!overlayStore.includes("captureProtected: true")) {
     fail("overlay capture protection must remain default-on");
 }
+if (!overlayStore.includes("sameNativePreferences")) {
+    fail("overlay runtime/store synchronization must retain its no-echo guard");
+}
 
 const overlayPage = read("app/overlay/page.tsx");
 if (overlayPage.includes("Waiting for response...")) {
@@ -55,6 +58,14 @@ if (shortcutManager.includes("unregisterAll") || overlayController.includes("unr
     fail("overlay/global shortcut ownership must never use unregisterAll()");
 }
 
+const capability = JSON.parse(read("src-tauri/capabilities/default.json"));
+if ((capability.permissions ?? []).includes("global-shortcut:allow-unregister-all")) {
+    fail("default capability must not grant unregister-all shortcut authority");
+}
+if (!(capability.windows ?? []).includes("overlay")) {
+    fail("dynamic overlay window must remain covered by a Tauri capability");
+}
+
 if (!process.exitCode) {
-    console.log("OVERLAY GREENFIELD PASS: optional window ownership, capture shield, renderer transport, and shortcut isolation guards are intact.");
+    console.log("OVERLAY GREENFIELD PASS: optional ownership, capture shield, renderer transport, no-echo state sync, and shortcut isolation guards are intact.");
 }

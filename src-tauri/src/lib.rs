@@ -72,7 +72,7 @@ pub fn run() {
             commands::update_direct_deepgram_transcription, commands::stop_direct_deepgram_transcription,
             commands::set_deepgram_mute,
             overlay::set_overlay_enabled, overlay::apply_overlay_config,
-            overlay::toggle_overlay_visibility, overlay::hide_overlay,
+            overlay::toggle_overlay_visibility, overlay::hide_overlay, overlay::center_overlay,
             overlay::set_overlay_click_through, overlay::publish_overlay_content,
             overlay::get_overlay_state,
             speech::commands::start_speech_transcription, speech::commands::stop_speech_transcription,

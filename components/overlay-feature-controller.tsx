@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
 import {
     applyOverlayConfig,
+    centerOverlay,
     normalizeOverlayProjection,
     onOverlayRuntimeState,
     publishOverlayContent,
@@ -29,14 +30,12 @@ export default function OverlayFeatureController() {
     const lastPayloadHash = useRef("");
     const [expanded, setExpanded] = useState(false);
     const desktopRuntime = isTauri();
-
     const nativeConfig = useMemo(() => overlayWindowConfig(preferences), [preferences]);
 
     useEffect(() => {
         if (!desktopRuntime) return;
         let disposed = false;
         let unlisten: (() => void) | null = null;
-
         void (async () => {
             try {
                 const state = await setOverlayEnabled(preferences.enabled, nativeConfig);
@@ -52,13 +51,11 @@ export default function OverlayFeatureController() {
                 if (!disposed) applyRuntime(state);
             });
         })();
-
         return () => {
             disposed = true;
             unlisten?.();
         };
-        // Initial ownership synchronization intentionally runs once; subsequent
-        // configuration changes use the native config effect below.
+        // Initial ownership synchronization intentionally runs once.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [desktopRuntime]);
 
@@ -108,8 +105,7 @@ export default function OverlayFeatureController() {
     const toggleVisible = useCallback(async () => {
         if (!preferences.enabled) return;
         try {
-            const state = await toggleOverlayVisibility();
-            applyRuntime(state);
+            applyRuntime(await toggleOverlayVisibility());
             setLastError(null);
         } catch (error) {
             setLastError(error instanceof Error ? error.message : String(error));
@@ -119,13 +115,22 @@ export default function OverlayFeatureController() {
     const toggleClickThrough = useCallback(async () => {
         if (!preferences.enabled) return;
         try {
-            const state = await setOverlayClickThrough(!preferences.clickThrough);
-            applyRuntime(state);
+            applyRuntime(await setOverlayClickThrough(!preferences.clickThrough));
             setLastError(null);
         } catch (error) {
             setLastError(error instanceof Error ? error.message : String(error));
         }
     }, [preferences.enabled, preferences.clickThrough, applyRuntime, setLastError]);
+
+    const recoverPosition = useCallback(async () => {
+        if (!preferences.enabled) return;
+        try {
+            applyRuntime(await centerOverlay());
+            setLastError(null);
+        } catch (error) {
+            setLastError(error instanceof Error ? error.message : String(error));
+        }
+    }, [preferences.enabled, applyRuntime, setLastError]);
 
     useEffect(() => {
         if (!desktopRuntime || !preferences.enabled) return;
@@ -134,9 +139,6 @@ export default function OverlayFeatureController() {
         void (async () => {
             try {
                 const { register } = await import("@tauri-apps/plugin-global-shortcut");
-                // Never pre-unregister exact bindings: they may belong to the
-                // main app or another optional subsystem. A collision should
-                // surface as an error rather than stealing another shortcut.
                 await register(preferences.toggleShortcut, (event) => {
                     if (String(event.state).toLowerCase() === "pressed") void toggleVisible();
                 });
@@ -158,22 +160,16 @@ export default function OverlayFeatureController() {
                 try {
                     const { unregister } = await import("@tauri-apps/plugin-global-shortcut");
                     for (const shortcut of cleanup) {
-                        try {
-                            await unregister(shortcut);
-                        } catch {
-                            // best-effort teardown of bindings this controller registered
-                        }
+                        try { await unregister(shortcut); } catch { /* best-effort */ }
                     }
-                } catch {
-                    // ignore teardown errors
-                }
+                } catch { /* ignore teardown errors */ }
             })();
         };
     }, [desktopRuntime, preferences.enabled, preferences.toggleShortcut, preferences.clickThroughShortcut, toggleVisible, toggleClickThrough, setLastError]);
 
     if (!desktopRuntime) return null;
-
     const visible = runtime?.visible ?? false;
+
     return (
         <div className="fixed bottom-3 right-3 z-[90] flex max-w-[360px] flex-col items-end gap-1">
             {expanded && preferences.enabled && (
@@ -195,23 +191,17 @@ export default function OverlayFeatureController() {
                         <input className="mt-1 w-full" type="range" min="1" max="8" value={preferences.maxResponses} onChange={(e) => updatePreferences({ maxResponses: Number(e.target.value) })} />
                     </label>
                     <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-                        <button type="button" onClick={() => updatePreferences({ autoShowOnResponse: !preferences.autoShowOnResponse })} className={`rounded border px-2 py-1.5 ${preferences.autoShowOnResponse ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>
-                            Auto-show {preferences.autoShowOnResponse ? "on" : "off"}
-                        </button>
-                        <button type="button" onClick={() => updatePreferences({ captureProtected: !preferences.captureProtected })} className={`rounded border px-2 py-1.5 ${preferences.captureProtected ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>
-                            Capture shield {preferences.captureProtected ? "on" : "off"}
-                        </button>
+                        <button type="button" onClick={() => updatePreferences({ autoShowOnResponse: !preferences.autoShowOnResponse })} className={`rounded border px-2 py-1.5 ${preferences.autoShowOnResponse ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>Auto-show {preferences.autoShowOnResponse ? "on" : "off"}</button>
+                        <button type="button" onClick={() => updatePreferences({ captureProtected: !preferences.captureProtected })} className={`rounded border px-2 py-1.5 ${preferences.captureProtected ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>Capture shield {preferences.captureProtected ? "on" : "off"}</button>
+                        <button type="button" onClick={recoverPosition} className="col-span-2 rounded border border-border px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">Center / recover window</button>
                     </div>
-                    <div className="mt-2 text-[9px] leading-relaxed text-muted-foreground/60">
-                        {preferences.toggleShortcut} show/hide · {preferences.clickThroughShortcut} click-through
-                    </div>
+                    <div className="mt-2 text-[9px] leading-relaxed text-muted-foreground/60">{preferences.toggleShortcut} show/hide · {preferences.clickThroughShortcut} click-through</div>
                     {lastError && <div className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-[9px] text-destructive">{lastError}</div>}
                 </div>
             )}
             <div className="flex items-center gap-1 rounded-md border border-border/80 bg-background/90 p-1 shadow-lg backdrop-blur-md">
                 <button type="button" onClick={toggleFeature} className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${preferences.enabled ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"}`} title={lastError ?? "Optional always-on-top PRMPTR response overlay"}>
-                    <span className={`mr-1 inline-block size-1.5 rounded-full ${preferences.enabled ? "bg-emerald-400" : "bg-muted-foreground/40"}`} />
-                    Overlay {preferences.enabled ? "on" : "off"}
+                    <span className={`mr-1 inline-block size-1.5 rounded-full ${preferences.enabled ? "bg-emerald-400" : "bg-muted-foreground/40"}`} />Overlay {preferences.enabled ? "on" : "off"}
                 </button>
                 {preferences.enabled && (
                     <>

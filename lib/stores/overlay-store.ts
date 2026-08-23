@@ -53,6 +53,18 @@ function clampPreferences(value: OverlayPreferences): OverlayPreferences {
     };
 }
 
+function sameNativePreferences(a: OverlayPreferences, b: OverlayPreferences): boolean {
+    return (
+        a.enabled === b.enabled &&
+        a.clickThrough === b.clickThrough &&
+        a.captureProtected === b.captureProtected &&
+        a.width === b.width &&
+        a.height === b.height &&
+        a.x === b.x &&
+        a.y === b.y
+    );
+}
+
 export function overlayWindowConfig(preferences: OverlayPreferences): OverlayWindowConfig {
     const p = clampPreferences(preferences);
     return {
@@ -77,9 +89,8 @@ export const useOverlayStore = create<OverlayStoreState>()(
                     preferences: clampPreferences({ ...state.preferences, ...patch }),
                 })),
             applyRuntime: (runtime) =>
-                set((state) => ({
-                    runtime,
-                    preferences: clampPreferences({
+                set((state) => {
+                    const nextPreferences = clampPreferences({
                         ...state.preferences,
                         enabled: runtime.enabled,
                         clickThrough: runtime.clickThrough,
@@ -88,8 +99,14 @@ export const useOverlayStore = create<OverlayStoreState>()(
                         height: runtime.config.height,
                         x: runtime.config.x,
                         y: runtime.config.y,
-                    }),
-                })),
+                    });
+                    // Preserve object identity when native-owned values are
+                    // unchanged. This prevents runtime-event echoes from
+                    // retriggering applyOverlayConfig indefinitely.
+                    return sameNativePreferences(state.preferences, nextPreferences)
+                        ? { runtime }
+                        : { runtime, preferences: nextPreferences };
+                }),
             setLastError: (lastError) => set({ lastError }),
             reset: () => set({ preferences: DEFAULTS, runtime: null, lastError: null }),
         }),

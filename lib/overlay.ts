@@ -108,6 +108,10 @@ export function hideOverlay(): Promise<OverlayRuntimeState> {
     return invoke("hide_overlay");
 }
 
+export function centerOverlay(): Promise<OverlayRuntimeState> {
+    return invoke("center_overlay");
+}
+
 export function setOverlayClickThrough(enabled: boolean): Promise<OverlayRuntimeState> {
     return invoke("set_overlay_click_through", { enabled });
 }
