@@ -12,8 +12,9 @@ export function useLocalTranscription() {
 
         onLocalTranscription((result) => {
             setItems((prev) => {
-                // Show only finalized local-whisper events in the feed to avoid
-                // inaccurate interim hypotheses (e.g., "testing when...").
+                // The current local engines emit a completed utterance as the
+                // durable unit. Keep partial hypotheses out of the feed until
+                // the native streaming path exposes revision-aware lines.
                 if (!result.is_final) {
                     return prev;
                 }
@@ -23,6 +24,8 @@ export function useLocalTranscription() {
                     id: result.id,
                     final: result.is_final,
                     device: result.device_type,
+                    speakerId: result.speaker_id,
+                    speakerLabel: result.speaker_label,
                     timestamp: result.timestamp,
                     text: result.text,
                 });
@@ -32,24 +35,22 @@ export function useLocalTranscription() {
                     type: "audio",
                     content: result.text,
                     timestamp: result.timestamp,
-                    source: "Transcript",
+                    source: result.device_type === "input" ? "Microphone" : "System audio",
                     deviceType: result.device_type,
                     isFinal: result.is_final,
-                    // Keep UI formatting stable: do not inject speaker metadata later.
-                    speaker: undefined,
-                    speakerLabel: undefined,
+                    speaker: result.speaker_id ?? undefined,
+                    speakerLabel: result.speaker_label ?? undefined,
                 };
 
-                // Update text in-place while preserving original metadata to avoid UI "reformat".
+                // Stable native IDs are revision keys. Update every mutable
+                // transcription field so later speaker/text corrections are
+                // reflected instead of preserving stale metadata forever.
                 const existingIdx = prev.findIndex((i) => i.id === result.id);
                 if (existingIdx >= 0) {
                     const updated = [...prev];
-                    const existing = updated[existingIdx];
                     updated[existingIdx] = {
-                        ...existing,
-                        content: feedItem.content,
-                        timestamp: feedItem.timestamp,
-                        isFinal: feedItem.isFinal,
+                        ...updated[existingIdx],
+                        ...feedItem,
                     };
                     return updated;
                 }

@@ -30,6 +30,7 @@ export interface DBFeedItem {
     source: string;
     windowName?: string;
     speaker?: number;
+    speakerLabel?: string;
     deviceType?: "input" | "output";
     isFinal?: boolean;
 }

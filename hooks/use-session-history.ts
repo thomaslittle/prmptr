@@ -140,6 +140,7 @@ export function useSessionHistory() {
                     source: f.source,
                     windowName: f.windowName,
                     speaker: f.speaker,
+                    speakerLabel: f.speakerLabel,
                     deviceType: f.deviceType,
                     isFinal: f.isFinal,
                 })),
@@ -183,6 +184,7 @@ export function useSessionHistory() {
                             source: item.source,
                             windowName: item.windowName,
                             speaker: item.speaker,
+                            speakerLabel: item.speakerLabel,
                             deviceType: item.deviceType,
                             isFinal: item.isFinal,
                         }))
@@ -220,7 +222,7 @@ export function useSessionHistory() {
             await db.sessions.update(id, { starred });
             await refreshList();
         },
-        [refreshList]
+        []
     );
 
     const renameSession = useCallback(
@@ -228,7 +230,7 @@ export function useSessionHistory() {
             await db.sessions.update(id, { title });
             await refreshList();
         },
-        [refreshList]
+        []
     );
 
     return {

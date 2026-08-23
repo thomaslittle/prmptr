@@ -6,8 +6,8 @@ Format your responses for quick glancing — the user is actively in a conversat
 
 UNDERSTANDING THE TRANSCRIPT:
 - [YOU] = the user (the person you are helping). These are things they ALREADY SAID.
-- [THEM] = other people in the conversation.
-- [AUDIO] = unknown source — treat like [THEM] unless context suggests otherwise.
+- [THEM] = other people in the conversation. When diarization is available this can be [THEM: Speaker 1], [THEM: Speaker 2], or a renamed participant.
+- [AUDIO] = unknown source — treat like [THEM] unless context suggests otherwise. It may also include a speaker suffix.
 
 YOUR PRIMARY JOB: Help the user respond to [THEM]. But also use [YOU] lines to understand what the user needs.
 
@@ -285,6 +285,35 @@ export interface DeviceNames {
     outputDevice?: string;
 }
 
+function safeSpeakerLabel(item: FeedItem): string | undefined {
+    const raw = item.speakerLabel?.trim()
+        || (item.speaker != null ? `Speaker ${item.speaker}` : "");
+    if (!raw) return undefined;
+
+    // Speaker names become prompt delimiters, so keep them single-line and
+    // prevent a label from manufacturing its own transcript marker.
+    const cleaned = raw
+        .replace(/[\r\n\[\]]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 64);
+    return cleaned || undefined;
+}
+
+function formatAudioLabel(item: FeedItem, devices?: DeviceNames): string {
+    const isInput = item.deviceType === "input"
+        || sourceMatchesDevice(item.source, devices?.inputDevice);
+    const isOutput = item.deviceType === "output"
+        || sourceMatchesDevice(item.source, devices?.outputDevice);
+    const speaker = safeSpeakerLabel(item);
+
+    // Capture topology is authoritative for the user's own microphone. Do not
+    // let diarization rename the user into an anonymous Speaker N.
+    if (isInput) return "[YOU]";
+    if (isOutput) return speaker ? `[THEM: ${speaker}]` : "[THEM]";
+    return speaker ? `[AUDIO: ${speaker}]` : "[AUDIO]";
+}
+
 function formatFeedItems(items: FeedItem[], devices?: DeviceNames): string {
     if (items.length === 0) return "(No recent activity captured)";
 
@@ -295,16 +324,7 @@ function formatFeedItems(items: FeedItem[], devices?: DeviceNames): string {
                 const source = `${item.source}${item.windowName ? ` — ${item.windowName}` : ""}`;
                 return `[SCREEN] ${time} (${source}): ${item.content.slice(0, 500)}`;
             }
-            // Audio: label by configured device match
-            let label: string;
-            if (sourceMatchesDevice(item.source, devices?.inputDevice)) {
-                label = "[YOU]";
-            } else if (sourceMatchesDevice(item.source, devices?.outputDevice)) {
-                label = "[THEM]";
-            } else {
-                label = "[AUDIO]";
-            }
-            return `${label} ${time}: ${item.content.slice(0, 500)}`;
+            return `${formatAudioLabel(item, devices)} ${time}: ${item.content.slice(0, 500)}`;
         })
         .join("\n");
 }
@@ -459,8 +479,8 @@ ${config.context || "General conversation assistance."}
 
 LABELS:
 - [YOU] = the user you are helping (things they already said)
-- [THEM] = other people in the conversation
-- [AUDIO] = unknown source
+- [THEM] or [THEM: name] = other people in the conversation
+- [AUDIO] or [AUDIO: name] = unknown source
 
 Say YES if:
 - [THEM] just asked [YOU] a question and [YOU] hasn't answered yet
