@@ -15,9 +15,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-    title: "PRMPTR — Real-time conversation intel. Local first.",
+    title: "PRMPTR — Your Conversation Copilot",
     description:
-        "It hears the room, transcribes on your own hardware, and hands you the line. Run it entirely offline, or point it at OpenCode Zen, Anthropic, OpenAI, Groq — whatever you already pay for.",
+        "PRMPTR listens to your mic and system audio, transcribes on-device, and surfaces the right line before the moment passes. Local first, open source, yours to extend.",
 };
 
 export default function LandingLayout({
