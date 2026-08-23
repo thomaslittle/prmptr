@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useCallback, useEffect, useState } from "react";
 import { FeedItem } from "@/lib/types";
+import { useSpeechContextSourceStore } from "@/lib/stores/speech-context-source-store";
 
 interface UseScreenpipeFeedOptions {
     screenpipeUrl: string;
@@ -23,10 +24,7 @@ export function useScreenpipeFeed({
 
     useEffect(() => {
         if (!enabled) return;
-
-        // Clear dedup set on fresh connection so reconnects aren't filtered
         seenIdsRef.current.clear();
-
         const params = new URLSearchParams({ screenpipeUrl, images: enableVision ? "true" : "false" });
         const es = new EventSource(`/api/stream?${params}`);
         eventSourceRef.current = es;
@@ -34,19 +32,21 @@ export function useScreenpipeFeed({
         es.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-
                 if (data.type === "status") {
                     setIsStreaming(data.connected ?? false);
                 } else if (data.type === "feed" && data.item) {
                     const item = data.item as FeedItem;
                     if (seenIdsRef.current.has(item.id)) return;
                     seenIdsRef.current.add(item.id);
+                    if (item.type === "ocr") {
+                        useSpeechContextSourceStore.getState().push(item);
+                    }
                     setItems((prev) => [item, ...prev].slice(0, maxItems));
                 } else if (data.type === "error") {
                     setError(new Error(data.message));
                 }
             } catch {
-                // ignore parse errors
+                // ignore malformed SSE messages
             }
         };
 
@@ -64,32 +64,21 @@ export function useScreenpipeFeed({
     const clearFeed = useCallback(() => {
         setItems([]);
         seenIdsRef.current.clear();
+        useSpeechContextSourceStore.getState().clear();
     }, []);
 
-    return {
-        items,
-        isPolling: isStreaming,
-        isError: !!error,
-        error,
-        clearFeed,
-    };
+    return { items, isPolling: isStreaming, isError: !!error, error, clearFeed };
 }
 
 export function useScreenpipeHealth(screenpipeUrl: string) {
     return useQuery({
         queryKey: ["screenpipe-health", screenpipeUrl],
         queryFn: async () => {
-            const resp = await fetch(
-                `/api/health?screenpipeUrl=${encodeURIComponent(screenpipeUrl)}`
-            );
+            const resp = await fetch(`/api/health?screenpipeUrl=${encodeURIComponent(screenpipeUrl)}`);
             if (!resp.ok) {
                 return { connected: false, message: `Health check failed (${resp.status})` };
             }
-            return resp.json() as Promise<{
-                connected: boolean;
-                message: string;
-                version?: string;
-            }>;
+            return resp.json() as Promise<{ connected: boolean; message: string; version?: string }>;
         },
         refetchInterval: 15000,
         retry: 1,

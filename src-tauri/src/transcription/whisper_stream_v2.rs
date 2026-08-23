@@ -46,7 +46,11 @@ impl From<LocalWhisperConfig> for crate::speech::stream::LocalSpeechConfig {
             whisper_model_id: value.whisper_model_id,
             prefer_gpu: value.prefer_gpu,
             engine: if value.use_moonshine {
-                crate::speech::engines::LocalSpeechEngine::MoonshineSherpa
+                if cfg!(feature = "moonshine-voice") {
+                    crate::speech::engines::LocalSpeechEngine::MoonshineVoice
+                } else {
+                    crate::speech::engines::LocalSpeechEngine::MoonshineSherpa
+                }
             } else {
                 crate::speech::engines::LocalSpeechEngine::Whisper
             },
@@ -54,5 +58,26 @@ impl From<LocalWhisperConfig> for crate::speech::stream::LocalSpeechConfig {
             mute_output: value.mute_output,
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_moonshine_selector_promotes_only_in_feature_builds() {
+        let mapped: crate::speech::stream::LocalSpeechConfig = LocalWhisperConfig {
+            use_moonshine: true,
+            ..Default::default()
+        }.into();
+        assert_eq!(
+            mapped.engine,
+            if cfg!(feature = "moonshine-voice") {
+                crate::speech::engines::LocalSpeechEngine::MoonshineVoice
+            } else {
+                crate::speech::engines::LocalSpeechEngine::MoonshineSherpa
+            }
+        );
     }
 }

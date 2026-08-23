@@ -34,10 +34,20 @@ fn clean_context(value: &str) -> String {
     value.replace('\0', " ").chars().take(32_000).collect()
 }
 
+fn clean_keyterm(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if matches!(ch, '\0' | ',' | '\n' | '\r') { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn clean_keyterms(values: &[String]) -> String {
     let mut out: Vec<String> = values
         .iter()
-        .map(|value| value.replace(['\0', ',', '\n', '\r'], " ").trim().to_string())
+        .map(|value| clean_keyterm(value))
         .filter(|value| !value.is_empty())
         .map(|value| value.chars().take(96).collect::<String>())
         .take(200)
@@ -117,7 +127,7 @@ impl EmitState {
             let key = (track, native.id);
             let fingerprint = line_fingerprint(&native);
             let revision = match self.revisions.get(&key) {
-                Some((previous_fingerprint, revision)) if *previous_fingerprint == fingerprint => continue,
+                Some((previous_fingerprint, _)) if *previous_fingerprint == fingerprint => continue,
                 Some((_, revision)) => revision.saturating_add(1),
                 None => 0,
             };
@@ -151,8 +161,6 @@ impl EmitState {
                         label: Some(format!("Speaker {}", span.speaker_index.saturating_add(1))),
                         start_ms: ms(span.start_time),
                         end_ms: ms(span.start_time + span.duration),
-                        // Moonshine offsets are UTF-8 bytes; PRMPTR's JS projection
-                        // consumes UTF-16 indices, so normalize them at the native boundary.
                         start_char: Some(utf8_byte_to_utf16(&native.text, span.start_char)),
                         end_char: Some(utf8_byte_to_utf16(&native.text, span.end_char)),
                     })
@@ -186,17 +194,15 @@ impl EmitState {
                 updated_at: now,
             };
             let _ = app.emit("speech-transcript-line", &line);
-
             if line.is_complete && !line.text.trim().is_empty() {
-                let entry = TranscriptEntry {
+                transcript_buffer.blocking_lock().update_or_push(TranscriptEntry {
                     id: line.id.clone(),
                     text: line.text.clone(),
                     timestamp: created_at,
                     source: line.engine.clone(),
                     speaker: line.speaker_spans.first().map(|span| span.speaker_index),
                     is_final: true,
-                };
-                transcript_buffer.blocking_lock().update_or_push(entry);
+                });
             }
         }
     }
@@ -211,10 +217,7 @@ pub fn spawn_worker(
     tracks: Vec<AudioTrackId>,
     config: MoonshineStreamConfig,
     ready_tx: std::sync::mpsc::SyncSender<Result<(), String>>,
-) -> (
-    std::thread::JoinHandle<()>,
-    std::sync::mpsc::Sender<MoonshineControl>,
-) {
+) -> (std::thread::JoinHandle<()>, std::sync::mpsc::Sender<MoonshineControl>) {
     let (control_tx, control_rx) = std::sync::mpsc::channel::<MoonshineControl>();
     let thread = std::thread::spawn(move || {
         use moonshine_rs::{Transcriber, TranscriberOptions};
@@ -314,8 +317,7 @@ pub fn spawn_worker(
                 let count = (gap as usize).min(zero_block.len());
                 if let Err(error) = stream.add_audio(&zero_block[..count], SPEECH_SAMPLE_RATE) {
                     let _ = app.emit("local-transcription-status", serde_json::json!({
-                        "mode": "moonshine-voice",
-                        "running": false,
+                        "mode": "moonshine-voice", "running": false,
                         "error": format!("Moonshine stream gap fill failed: {error}")
                     }));
                     running.store(false, Ordering::Relaxed);
@@ -325,8 +327,7 @@ pub fn spawn_worker(
             }
             if let Err(error) = stream.add_audio(&chunk.samples, SPEECH_SAMPLE_RATE) {
                 let _ = app.emit("local-transcription-status", serde_json::json!({
-                    "mode": "moonshine-voice",
-                    "running": false,
+                    "mode": "moonshine-voice", "running": false,
                     "error": format!("Moonshine stream add_audio failed: {error}")
                 }));
                 running.store(false, Ordering::Relaxed);
@@ -336,20 +337,16 @@ pub fn spawn_worker(
 
             let poll_due = last_poll
                 .get(&chunk.track)
-                .is_none_or(|instant| instant.elapsed() >= Duration::from_millis(350));
+                .map(|instant| instant.elapsed() >= Duration::from_millis(350))
+                .unwrap_or(true);
             if poll_due {
                 match stream.poll(false) {
                     Ok(transcript) => emit.emit_transcript(
-                        &app,
-                        &transcript_buffer,
-                        chunk.track,
-                        config.arch,
-                        transcript,
+                        &app, &transcript_buffer, chunk.track, config.arch, transcript,
                     ),
                     Err(error) => {
                         let _ = app.emit("local-transcription-status", serde_json::json!({
-                            "mode": "moonshine-voice",
-                            "running": false,
+                            "mode": "moonshine-voice", "running": false,
                             "error": format!("Moonshine stream poll failed: {error}")
                         }));
                         running.store(false, Ordering::Relaxed);
@@ -362,13 +359,7 @@ pub fn spawn_worker(
 
         for (track, stream) in streams.drain() {
             match stream.finalize() {
-                Ok(transcript) => emit.emit_transcript(
-                    &app,
-                    &transcript_buffer,
-                    track,
-                    config.arch,
-                    transcript,
-                ),
+                Ok(transcript) => emit.emit_transcript(&app, &transcript_buffer, track, config.arch, transcript),
                 Err(error) => log::warn!("Moonshine {} finalization failed: {error}", track.as_str()),
             }
         }
@@ -386,16 +377,12 @@ pub fn spawn_worker(
     _tracks: Vec<AudioTrackId>,
     _config: MoonshineStreamConfig,
     ready_tx: std::sync::mpsc::SyncSender<Result<(), String>>,
-) -> (
-    std::thread::JoinHandle<()>,
-    std::sync::mpsc::Sender<MoonshineControl>,
-) {
+) -> (std::thread::JoinHandle<()>, std::sync::mpsc::Sender<MoonshineControl>) {
     let (control_tx, _control_rx) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         running.store(false, Ordering::Relaxed);
         let _ = ready_tx.send(Err(
-            "Moonshine Voice is not compiled into this build; enable the moonshine-voice feature"
-                .to_string(),
+            "Moonshine Voice is not compiled into this build; enable the moonshine-voice feature".to_string(),
         ));
     });
     (thread, control_tx)
