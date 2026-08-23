@@ -1,9 +1,10 @@
-pub mod canonical;
-pub mod capabilities;
-pub mod diagnostics;
-pub mod filter;
 pub mod transcript;
+#[path = "whisper_stream_v2.rs"]
 pub mod whisper_stream;
 pub mod deepgram_stream;
 pub mod model_manager;
 pub mod speaker;
+pub mod canonical;
+pub mod capabilities;
+pub mod filter;
+pub mod diagnostics;

@@ -2,6 +2,7 @@ pub mod commands;
 pub mod errors;
 pub mod screenpipe;
 pub mod session;
+pub mod speech;
 pub mod state;
 pub mod transcription;
 
@@ -10,10 +11,10 @@ use tokio::sync::Mutex;
 use tauri::{Manager, Emitter};
 
 use screenpipe::manager::ScreenpipeManager;
-use transcription::transcript::TranscriptBuffer;
-use transcription::whisper_stream::WhisperStreamManager;
-use transcription::deepgram_stream::DirectDeepgramStreamManager;
 use session::manager::SessionManager;
+use speech::stream::SpeechStreamManager;
+use transcription::deepgram_stream::DirectDeepgramStreamManager;
+use transcription::transcript::TranscriptBuffer;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,13 +32,13 @@ pub fn run() {
             let screenpipe = Arc::new(Mutex::new(ScreenpipeManager::new()));
             let transcript = Arc::new(Mutex::new(TranscriptBuffer::new(120)));
             let session = Arc::new(Mutex::new(SessionManager::new()));
-            let whisper_stream = Arc::new(Mutex::new(WhisperStreamManager::new()));
+            let speech_stream = Arc::new(Mutex::new(SpeechStreamManager::new()));
             let direct_deepgram_stream = Arc::new(Mutex::new(DirectDeepgramStreamManager::new()));
 
             app.manage(screenpipe.clone());
             app.manage(transcript.clone());
             app.manage(session.clone());
-            app.manage(whisper_stream.clone());
+            app.manage(speech_stream.clone());
             app.manage(direct_deepgram_stream.clone());
 
             let screenpipe_clone = screenpipe.clone();
@@ -90,10 +91,9 @@ pub fn run() {
             commands::set_deepgram_mute,
             transcription::speaker::get_speaker_diarization_enabled,
             transcription::speaker::set_speaker_diarization_enabled,
-            transcription::speaker::get_speech_detection_diagnostics,
-            transcription::speaker::reset_speech_detection_diagnostics,
             transcription::capabilities::get_speech_capabilities,
             transcription::diagnostics::get_speech_diagnostic_bundle,
+            speech::diagnostics::get_audio_pipeline_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

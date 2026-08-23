@@ -41,6 +41,7 @@ zip = "2"
 flate2 = "1"
 tar = "0.4"
 cpal = "0.15"
+rubato = "0.16.2"
 whisper-rs = "0.15.1"
 whisper-rs-sys = "0.14.1"
 sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries", "tts"] }
