@@ -12,7 +12,9 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 use crate::speech::audio::capture::{spawn_capture_thread, CaptureSpec};
 use crate::speech::audio::metrics::{AudioPipelineMetrics, AudioPipelineSnapshot};
-use crate::speech::audio::{platform, AudioChunk, AudioTrackId, DEFAULT_AUDIO_QUEUE_CAPACITY, SPEECH_SAMPLE_RATE};
+use crate::speech::audio::{
+    platform, AudioChunk, AudioTrackId, DEFAULT_AUDIO_QUEUE_CAPACITY, SPEECH_SAMPLE_RATE,
+};
 use crate::transcription::canonical::{
     SpeakerSpan, TranscriptLine, TranscriptRole, TranscriptTrackId, TranscriptWord,
 };
@@ -112,12 +114,10 @@ fn locate_word(text: &str, cursor: usize, word: &str) -> Option<(usize, usize)> 
     if cursor >= text.len() || word.is_empty() {
         return None;
     }
-    text.get(cursor..)?
-        .find(word)
-        .map(|offset| {
-            let start = cursor + offset;
-            (start, start + word.len())
-        })
+    text.get(cursor..)?.find(word).map(|offset| {
+        let start = cursor + offset;
+        (start, start + word.len())
+    })
 }
 
 fn speaker_spans(text: &str, words: &[DeepgramWord], track: AudioTrackId) -> Vec<SpeakerSpan> {
@@ -154,8 +154,6 @@ fn speaker_spans(text: &str, words: &[DeepgramWord], track: AudioTrackId) -> Vec
         let Some(raw_speaker) = word.speaker else {
             continue;
         };
-        // Deepgram speaker IDs are zero-based. PRMPTR displays human-friendly
-        // 1-based identities and namespaces them to the system track.
         let speaker_index = raw_speaker.saturating_add(1);
         let char_range = locate_word(text, cursor, &word.word);
         if let Some((_, end)) = char_range {
@@ -320,14 +318,15 @@ fn spawn_worker(
                                 break;
                             }
                         };
-                        let tokio_tungstenite::tungstenite::Message::Text(text) = message else {
-                            if matches!(message, tokio_tungstenite::tungstenite::Message::Close(_))
-                                && running.load(Ordering::Relaxed)
-                            {
-                                emit_unexpected_stop(&app, &running, track, "server closed the websocket");
+                        let text = match message {
+                            tokio_tungstenite::tungstenite::Message::Text(text) => text,
+                            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                                if running.load(Ordering::Relaxed) {
+                                    emit_unexpected_stop(&app, &running, track, "server closed the websocket");
+                                }
                                 break;
                             }
-                            continue;
+                            _ => continue,
                         };
                         let event = match serde_json::from_str::<DeepgramMessage>(&text) {
                             Ok(event) => event,
@@ -527,26 +526,27 @@ impl DirectDeepgramStreamManager {
             });
         }
 
+        let mut readiness_error = None;
         for plan in &plans {
             match plan.ready.recv_timeout(Duration::from_secs(20)) {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    running.store(false, Ordering::Relaxed);
-                    drop(plans);
-                    for worker in workers {
-                        let _ = worker.join();
-                    }
-                    return Err(error);
+                    readiness_error = Some(error);
+                    break;
                 }
                 Err(error) => {
-                    running.store(false, Ordering::Relaxed);
-                    drop(plans);
-                    for worker in workers {
-                        let _ = worker.join();
-                    }
-                    return Err(format!("Timed out connecting to Deepgram: {error}"));
+                    readiness_error = Some(format!("Timed out connecting to Deepgram: {error}"));
+                    break;
                 }
             }
+        }
+        if let Some(error) = readiness_error {
+            running.store(false, Ordering::Relaxed);
+            drop(plans);
+            for worker in workers {
+                let _ = worker.join();
+            }
+            return Err(error);
         }
 
         let mut captures = Vec::new();
