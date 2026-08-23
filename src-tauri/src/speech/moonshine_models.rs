@@ -51,6 +51,16 @@ fn ensure_owned_model_directory(
     if root.file_name().and_then(|name| name.to_str()) != Some("moonshine-voice") {
         return Err("Refusing to manage a path outside PRMPTR's Moonshine model root".to_string());
     }
+    if target.exists() {
+        let metadata = std::fs::symlink_metadata(&target)
+            .map_err(|error| format!("Unable to inspect Moonshine model directory: {error}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Refusing to recursively delete a symlinked Moonshine model directory".to_string());
+        }
+        if !metadata.is_dir() {
+            return Err("Refusing to manage a Moonshine model path that is not a directory".to_string());
+        }
+    }
     Ok(target)
 }
 

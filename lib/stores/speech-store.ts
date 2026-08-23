@@ -71,7 +71,9 @@ export const useSpeechStore = create<SpeechPreferenceState>()(
             reset: () => set({ preferences: DEFAULTS }),
         }),
         {
-            name: "prmptr-speech-preferences.v3",
+            // Keep the existing storage key so persisted v2 preferences are
+            // migrated in place rather than appearing to reset on upgrade.
+            name: "prmptr-speech-preferences.v2",
             storage: createJSONStorage(() => localStorage),
             migrate: (persisted) => {
                 const state = persisted as Partial<SpeechPreferenceState> | undefined;
