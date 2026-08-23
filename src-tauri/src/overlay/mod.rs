@@ -23,6 +23,32 @@ fn can_persist_global_position() -> bool {
 #[cfg(not(target_os = "linux"))]
 fn can_persist_global_position() -> bool { true }
 
+fn capture_protection_supported() -> bool {
+    cfg!(any(target_os = "windows", target_os = "macos"))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayCapabilities {
+    pub platform: String,
+    pub transparency_supported: bool,
+    pub always_on_top_supported: bool,
+    pub click_through_supported: bool,
+    pub capture_protection_supported: bool,
+    pub global_position_persistence_supported: bool,
+}
+
+fn overlay_capabilities() -> OverlayCapabilities {
+    OverlayCapabilities {
+        platform: std::env::consts::OS.to_string(),
+        transparency_supported: cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux")),
+        always_on_top_supported: cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux")),
+        click_through_supported: cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux")),
+        capture_protection_supported: capture_protection_supported(),
+        global_position_persistence_supported: can_persist_global_position(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayWindowConfig {
@@ -106,6 +132,7 @@ pub struct OverlayRuntimeState {
     pub visible: bool,
     pub click_through: bool,
     pub capture_protected: bool,
+    pub capabilities: OverlayCapabilities,
     pub config: OverlayWindowConfig,
     pub content: OverlayContent,
 }
@@ -134,12 +161,14 @@ impl OverlayManager {
     fn snapshot(&self, app: &tauri::AppHandle) -> OverlayRuntimeState {
         let inner = self.inner.lock().expect("overlay state poisoned");
         let window = app.get_webview_window(OVERLAY_LABEL);
+        let capabilities = overlay_capabilities();
         OverlayRuntimeState {
             enabled: inner.enabled,
             window_exists: window.is_some(),
             visible: window.as_ref().and_then(|w| w.is_visible().ok()).unwrap_or(false),
             click_through: inner.config.click_through,
-            capture_protected: inner.config.capture_protected,
+            capture_protected: inner.config.capture_protected && capabilities.capture_protection_supported,
+            capabilities,
             config: inner.config.clone(),
             content: inner.content.clone(),
         }
@@ -167,8 +196,17 @@ impl OverlayManager {
     }
 }
 
+fn should_auto_show(previous: &OverlayContent, next: &OverlayContent) -> bool {
+    let stream_started = !previous.is_streaming && next.is_streaming;
+    let previous_response = previous.responses.first().map(|item| item.id.as_str());
+    let next_response = next.responses.first().map(|item| item.id.as_str());
+    let new_completed_response = next_response.is_some() && next_response != previous_response;
+    stream_started || new_completed_response
+}
+
 fn ensure_window(app: &tauri::AppHandle, config: &OverlayWindowConfig) -> Result<tauri::WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) { return Ok(window); }
+    let effective_capture_protection = config.capture_protected && capture_protection_supported();
     let mut builder = WebviewWindowBuilder::new(app, OVERLAY_LABEL, WebviewUrl::App("overlay".into()))
         .title("PRMPTR Overlay")
         .inner_size(config.width, config.height)
@@ -180,7 +218,7 @@ fn ensure_window(app: &tauri::AppHandle, config: &OverlayWindowConfig) -> Result
         .skip_taskbar(true)
         .focused(false)
         .visible(false)
-        .content_protected(config.capture_protected)
+        .content_protected(effective_capture_protection)
         .shadow(false);
     if let (Some(x), Some(y)) = (config.x, config.y) {
         builder = builder.position(x as f64, y as f64);
@@ -200,11 +238,15 @@ fn emit_runtime(app: &tauri::AppHandle, manager: &OverlayManager) {
 }
 
 fn apply_window_config(window: &tauri::WebviewWindow, next: &OverlayWindowConfig, previous: Option<&OverlayWindowConfig>) -> Result<(), String> {
-    window.set_content_protected(next.capture_protected)
-        .map_err(|error| format!("Unable to apply overlay capture protection: {error}"))?;
+    if capture_protection_supported() {
+        window.set_content_protected(next.capture_protected)
+            .map_err(|error| format!("Unable to apply overlay capture protection: {error}"))?;
+    }
     if let Err(error) = window.set_ignore_cursor_events(next.click_through) {
-        if let Some(previous) = previous {
-            let _ = window.set_content_protected(previous.capture_protected);
+        if capture_protection_supported() {
+            if let Some(previous) = previous {
+                let _ = window.set_content_protected(previous.capture_protected);
+            }
         }
         return Err(format!("Unable to apply overlay click-through state: {error}"));
     }
@@ -334,17 +376,16 @@ pub async fn publish_overlay_content(
     manager: State<'_, OverlayManager>,
     content: OverlayContent,
 ) -> Result<OverlayRuntimeState, String> {
-    let (enabled, config) = {
+    let (enabled, config, auto_show_now) = {
         let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
+        let auto_show_now = should_auto_show(&inner.content, &content);
         inner.content = content.clone();
-        (inner.enabled, inner.config.clone())
+        (inner.enabled, inner.config.clone(), auto_show_now)
     };
     if enabled {
         let window = ensure_window(&app, &config)?;
         let _ = app.emit_to(OVERLAY_LABEL, OVERLAY_CONTENT_EVENT, &content);
-        if config.auto_show_on_response
-            && (!content.current_response.trim().is_empty() || !content.responses.is_empty())
-        {
+        if config.auto_show_on_response && auto_show_now {
             window.show().map_err(|error| format!("Unable to auto-show overlay: {error}"))?;
         }
     }
@@ -384,6 +425,16 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &tauri::W
 mod tests {
     use super::*;
 
+    fn response(id: &str) -> OverlayResponseItem {
+        OverlayResponseItem {
+            id: id.to_string(),
+            content: "test".to_string(),
+            timestamp: "2026-08-23T00:00:00Z".to_string(),
+            model: "test".to_string(),
+            kind: Some("analysis".to_string()),
+        }
+    }
+
     #[test]
     fn overlay_bounds_are_clamped_to_sane_limits() {
         let config = OverlayWindowConfig { width: 50.0, height: 5000.0, ..Default::default() }.normalized();
@@ -398,5 +449,33 @@ mod tests {
         assert!(!inner.enabled);
         assert!(inner.config.capture_protected);
         assert!(!inner.config.click_through);
+    }
+
+    #[test]
+    fn auto_show_only_triggers_on_new_response_activity() {
+        let empty = OverlayContent::default();
+        let streaming = OverlayContent { is_streaming: true, ..Default::default() };
+        assert!(should_auto_show(&empty, &streaming));
+
+        let streaming_token = OverlayContent {
+            is_streaming: true,
+            current_response: "hello".to_string(),
+            ..Default::default()
+        };
+        assert!(!should_auto_show(&streaming, &streaming_token));
+
+        let completed = OverlayContent {
+            responses: vec![response("response-1")],
+            ..Default::default()
+        };
+        assert!(should_auto_show(&streaming_token, &completed));
+        assert!(!should_auto_show(&completed, &completed));
+
+        let appearance_only = OverlayContent {
+            responses: vec![response("response-1")],
+            appearance: OverlayAppearance { opacity: 0.5, font_scale: 1.2 },
+            ..Default::default()
+        };
+        assert!(!should_auto_show(&completed, &appearance_only));
     }
 }
