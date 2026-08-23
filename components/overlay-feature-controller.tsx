@@ -35,6 +35,10 @@ export default function OverlayFeatureController() {
     const previewActive = useRef(false);
     const [expanded, setExpanded] = useState(false);
     const [isPreviewing, setIsPreviewing] = useState(false);
+    // SSR renders null; the desktop-only control tree must only appear after
+    // mount or the Tauri webview hydrates against mismatched HTML.
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
     const desktopRuntime = isTauri();
     const nativeConfig = useMemo(() => overlayWindowConfig(preferences), [preferences]);
 
@@ -268,7 +272,7 @@ export default function OverlayFeatureController() {
         };
     }, [desktopRuntime, preferences.enabled, preferences.toggleShortcut, preferences.clickThroughShortcut, toggleVisible, toggleClickThrough, setLastError]);
 
-    if (!desktopRuntime) return null;
+    if (!mounted || !desktopRuntime) return null;
     const visible = runtime?.visible ?? false;
     const capabilities = runtime?.capabilities;
     const captureSupported = capabilities?.captureProtectionSupported ?? true;

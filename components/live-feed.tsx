@@ -64,6 +64,10 @@ export default memo(function LiveFeed({
     const [speechCapabilities, setSpeechCapabilities] = useState<SpeechCapabilities | null>(null);
     const [editingSpeaker, setEditingSpeaker] = useState<{ key: string; value: string } | null>(null);
     const setSpeakerAlias = useSpeakerAliasStore((state) => state.setAlias);
+    // SSR must match the first client render: gate desktop-only UI on a
+    // post-mount flag instead of branching on isTauri() during render.
+    const [desktopMounted, setDesktopMounted] = useState(false);
+    useEffect(() => setDesktopMounted(true), []);
     const desktopRuntime = isTauri();
 
     useEffect(() => {
@@ -107,7 +111,7 @@ export default memo(function LiveFeed({
     };
 
     const systemCaptureUnavailable =
-        desktopRuntime && speechCapabilities && !speechCapabilities.systemCapture.available;
+        desktopMounted && desktopRuntime && speechCapabilities && !speechCapabilities.systemCapture.available;
 
     return (
         <div className="flex flex-col min-h-0 flex-1">
@@ -126,7 +130,7 @@ export default memo(function LiveFeed({
                             System audio unavailable
                         </span>
                     )}
-                    {desktopRuntime && (
+                    {desktopMounted && desktopRuntime && (
                         <button
                             type="button"
                             aria-pressed={diarizationEnabled}
