@@ -1,6 +1,7 @@
 pub mod transcript;
 #[path = "whisper_stream_v2.rs"]
 pub mod whisper_stream;
+#[path = "deepgram_stream_v2.rs"]
 pub mod deepgram_stream;
 pub mod model_manager;
 pub mod speaker;
