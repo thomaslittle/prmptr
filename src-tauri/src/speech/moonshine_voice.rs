@@ -3,6 +3,7 @@ use tauri::Manager;
 
 const WRAPPER_REVISION: &str = "887c89f641d9bf8469099aa1e1f21c65ed72d24d";
 const NATIVE_RELEASE: &str = "v0.1.2";
+const INSTALL_MARKER: &str = ".prmptr-moonshine-install.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -69,36 +70,60 @@ pub fn model_dir(app: &tauri::AppHandle, arch: MoonshineVoiceArch) -> Result<std
     Ok(root.join("models").join("moonshine-voice").join(arch.id()))
 }
 
+pub fn diarization_dir(app: &tauri::AppHandle, arch: MoonshineVoiceArch) -> Result<std::path::PathBuf, String> {
+    Ok(model_dir(app, arch)?.join("diarization"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallMarker {
+    schema_version: u32,
+    arch: String,
+    wrapper_revision: String,
+    native_release: String,
+    model_files: Vec<String>,
+    diarization_files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoonshineVoiceModelStatus {
     pub arch: String,
     pub installed: bool,
     pub directory: String,
-    pub files: Vec<String>,
+    pub model_files: Vec<String>,
+    pub diarization_files: Vec<String>,
+    pub integrity_manifest_present: bool,
+}
+
+fn valid_marker(dir: &std::path::Path, marker: &InstallMarker) -> bool {
+    marker.schema_version == 1
+        && marker.wrapper_revision == WRAPPER_REVISION
+        && marker.native_release == NATIVE_RELEASE
+        && !marker.model_files.is_empty()
+        && marker.model_files.iter().all(|name| dir.join(name).is_file())
+        && ["segmentation.ort", "embedding.ort"]
+            .iter()
+            .all(|name| dir.join("diarization").join(name).is_file())
 }
 
 pub fn model_status(app: &tauri::AppHandle, arch: MoonshineVoiceArch) -> Result<MoonshineVoiceModelStatus, String> {
     let dir = model_dir(app, arch)?;
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                files.push(entry.file_name().to_string_lossy().to_string());
-            }
-        }
-    }
-    files.sort();
-    let required = ["encoder.ort", "decoder.ort", "streaming_config.json", "tokenizer.bin"];
-    let installed = required.iter().all(|name| dir.join(name).is_file())
-        || (dir.join("encoder_model.ort").is_file()
-            && dir.join("decoder_model_merged.ort").is_file()
-            && dir.join("tokenizer.bin").is_file());
+    let marker_path = dir.join(INSTALL_MARKER);
+    let marker = std::fs::read_to_string(&marker_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<InstallMarker>(&raw).ok());
+    let installed = marker.as_ref().is_some_and(|value| valid_marker(&dir, value));
     Ok(MoonshineVoiceModelStatus {
         arch: arch.id().to_string(),
         installed,
         directory: dir.to_string_lossy().to_string(),
-        files,
+        model_files: marker.as_ref().map(|value| value.model_files.clone()).unwrap_or_default(),
+        diarization_files: marker
+            .as_ref()
+            .map(|value| value.diarization_files.clone())
+            .unwrap_or_default(),
+        integrity_manifest_present: marker_path.is_file(),
     })
 }
 
@@ -148,32 +173,17 @@ fn verify_crc32c(bytes: &[u8], encoded: &str) -> Result<(), String> {
 }
 
 #[cfg(feature = "moonshine-voice")]
-pub async fn install_model(
-    app: &tauri::AppHandle,
-    arch: MoonshineVoiceArch,
-) -> Result<MoonshineVoiceModelStatus, String> {
+async fn install_manifest(
+    client: &reqwest::Client,
+    raw_manifest: &str,
+    destination_dir: &std::path::Path,
+) -> Result<Vec<String>, String> {
     use futures_util::StreamExt;
-    use moonshine_rs::{get_stt_dependencies_with_options, SttDependenciesOptions};
-
-    let manifest_json = get_stt_dependencies_with_options(
-        "en",
-        &SttDependenciesOptions::new()
-            .with_arch(arch.native())
-            .with_word_timestamps(true),
-    )
-    .map_err(|error| format!("Moonshine dependency resolution failed: {error}"))?;
-    let manifest: DependencyManifest = serde_json::from_str(&manifest_json)
+    let manifest: DependencyManifest = serde_json::from_str(raw_manifest)
         .map_err(|error| format!("Invalid Moonshine dependency manifest: {error}"))?;
-    let dir = model_dir(app, arch)?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("Unable to create Moonshine model directory: {error}"))?;
-
-    let client = reqwest::Client::builder()
-        .user_agent("PRMPTR-MoonshineVoice/0.1")
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|error| format!("Unable to build Moonshine download client: {error}"))?;
+    std::fs::create_dir_all(destination_dir)
+        .map_err(|error| format!("Unable to create {}: {error}", destination_dir.display()))?;
+    let mut installed = Vec::new();
 
     for group in manifest.groups {
         for file in group.files {
@@ -186,16 +196,15 @@ pub async fn install_model(
                     file.name, file.checksum_type
                 ));
             }
-            let destination = dir.join(&file.name);
-            let existing = std::fs::read(&destination).ok();
-            if let Some(bytes) = existing.as_deref() {
+            let destination = destination_dir.join(&file.name);
+            if let Ok(bytes) = std::fs::read(&destination) {
                 let size_ok = file.size.map(|size| size == bytes.len() as u64).unwrap_or(true);
-                if size_ok && verify_crc32c(bytes, &file.checksum).is_ok() {
+                if size_ok && verify_crc32c(&bytes, &file.checksum).is_ok() {
+                    installed.push(file.name);
                     continue;
                 }
             }
 
-            let part = dir.join(format!("{}.part", file.name));
             let response = client
                 .get(&file.url)
                 .send()
@@ -219,27 +228,85 @@ pub async fn install_model(
                 if bytes.len() as u64 != expected {
                     return Err(format!(
                         "Moonshine download {} size mismatch: expected {}, got {}",
-                        file.name,
-                        expected,
-                        bytes.len()
+                        file.name, expected, bytes.len()
                     ));
                 }
             }
             verify_crc32c(&bytes, &file.checksum)
                 .map_err(|error| format!("Moonshine download {} failed integrity check: {error}", file.name))?;
+            let part = destination_dir.join(format!("{}.part", file.name));
             std::fs::write(&part, &bytes)
                 .map_err(|error| format!("Unable to write {}: {error}", part.display()))?;
+            if destination.exists() {
+                std::fs::remove_file(&destination)
+                    .map_err(|error| format!("Unable to replace {}: {error}", destination.display()))?;
+            }
             std::fs::rename(&part, &destination)
                 .map_err(|error| format!("Unable to atomically install {}: {error}", destination.display()))?;
+            installed.push(file.name);
         }
     }
+    installed.sort();
+    installed.dedup();
+    Ok(installed)
+}
+
+#[cfg(feature = "moonshine-voice")]
+pub async fn install_model(
+    app: &tauri::AppHandle,
+    arch: MoonshineVoiceArch,
+) -> Result<MoonshineVoiceModelStatus, String> {
+    use moonshine_rs::{
+        get_diarization_dependencies, get_stt_dependencies_with_options, SttDependenciesOptions,
+    };
+
+    let model_manifest = get_stt_dependencies_with_options(
+        "en",
+        &SttDependenciesOptions::new()
+            .with_arch(arch.native())
+            .with_word_timestamps(true),
+    )
+    .map_err(|error| format!("Moonshine STT dependency resolution failed: {error}"))?;
+    let diarization_manifest = get_diarization_dependencies()
+        .map_err(|error| format!("Moonshine diarization dependency resolution failed: {error}"))?;
+    let dir = model_dir(app, arch)?;
+    let diarization = diarization_dir(app, arch)?;
+
+    let client = reqwest::Client::builder()
+        .user_agent("PRMPTR-MoonshineVoice/0.1")
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|error| format!("Unable to build Moonshine download client: {error}"))?;
+
+    let model_files = install_manifest(&client, &model_manifest, &dir).await?;
+    let diarization_files = install_manifest(&client, &diarization_manifest, &diarization).await?;
+    if !["segmentation.ort", "embedding.ort"]
+        .iter()
+        .all(|name| diarization.join(name).is_file())
+    {
+        return Err("Moonshine diarization manifest completed without both required models".to_string());
+    }
+
+    let marker = InstallMarker {
+        schema_version: 1,
+        arch: arch.id().to_string(),
+        wrapper_revision: WRAPPER_REVISION.to_string(),
+        native_release: NATIVE_RELEASE.to_string(),
+        model_files,
+        diarization_files,
+    };
+    let marker_json = serde_json::to_vec_pretty(&marker)
+        .map_err(|error| format!("Unable to serialize Moonshine install marker: {error}"))?;
+    let marker_part = dir.join(format!("{INSTALL_MARKER}.part"));
+    std::fs::write(&marker_part, marker_json)
+        .map_err(|error| format!("Unable to write Moonshine install marker: {error}"))?;
+    std::fs::rename(&marker_part, dir.join(INSTALL_MARKER))
+        .map_err(|error| format!("Unable to finalize Moonshine install marker: {error}"))?;
 
     let status = model_status(app, arch)?;
     if !status.installed {
-        return Err(format!(
-            "Moonshine Voice dependencies downloaded but required model files were not found in {}",
-            status.directory
-        ));
+        return Err("Moonshine Voice integrity marker was written but validation still failed".to_string());
     }
     Ok(status)
 }

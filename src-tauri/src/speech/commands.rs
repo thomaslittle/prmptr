@@ -4,6 +4,9 @@ use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
 
+use crate::speech::moonshine_voice::{
+    self, MoonshineVoiceArch, MoonshineVoiceModelStatus, MoonshineVoiceSupport,
+};
 use crate::speech::stream::{LocalSpeechConfig, SpeechStreamManager};
 use crate::transcription::transcript::TranscriptBuffer;
 
@@ -63,4 +66,25 @@ pub async fn get_speech_activity(
         input_muted: manager.input_muted(),
         output_muted: manager.output_muted(),
     })
+}
+
+#[tauri::command]
+pub fn get_moonshine_voice_support() -> MoonshineVoiceSupport {
+    moonshine_voice::support()
+}
+
+#[tauri::command]
+pub fn get_moonshine_voice_model_status(
+    app: tauri::AppHandle,
+    arch: MoonshineVoiceArch,
+) -> Result<MoonshineVoiceModelStatus, String> {
+    moonshine_voice::model_status(&app, arch)
+}
+
+#[tauri::command]
+pub async fn install_moonshine_voice_model(
+    app: tauri::AppHandle,
+    arch: MoonshineVoiceArch,
+) -> Result<MoonshineVoiceModelStatus, String> {
+    moonshine_voice::install_model(&app, arch).await
 }
