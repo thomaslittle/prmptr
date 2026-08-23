@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { SessionConfig } from "@/lib/types";
+import type { TranscriptLine } from "@/lib/transcript";
 
 export interface DBSession {
     id: string;
@@ -35,6 +36,10 @@ export interface DBFeedItem {
     isFinal?: boolean;
 }
 
+export type DBTranscriptLine = TranscriptLine & {
+    sessionId: string;
+};
+
 export interface DBPreference {
     key: string;
     value: string;
@@ -44,6 +49,7 @@ const db = new Dexie("prmptr") as Dexie & {
     sessions: EntityTable<DBSession, "id">;
     responses: EntityTable<DBResponse, "id">;
     feedItems: EntityTable<DBFeedItem, "id">;
+    transcriptLines: EntityTable<DBTranscriptLine, "id">;
     preferences: EntityTable<DBPreference, "key">;
 };
 
@@ -62,6 +68,14 @@ db.version(3).stores({
     sessions: "id, updatedAt",
     responses: "id, sessionId, timestamp",
     feedItems: "id, sessionId, timestamp",
+    preferences: "key",
+});
+
+db.version(4).stores({
+    sessions: "id, updatedAt",
+    responses: "id, sessionId, timestamp",
+    feedItems: "id, sessionId, timestamp",
+    transcriptLines: "id, sessionId, updatedAt, trackId, [sessionId+trackId]",
     preferences: "key",
 });
 

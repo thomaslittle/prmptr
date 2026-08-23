@@ -19,7 +19,6 @@ use session::manager::SessionManager;
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
-    // Expose MCP tooling only in dev/debug runs.
     #[cfg(debug_assertions)]
     {
         builder = builder.plugin(tauri_plugin_mcp_bridge::init());
@@ -41,7 +40,6 @@ pub fn run() {
             app.manage(whisper_stream.clone());
             app.manage(direct_deepgram_stream.clone());
 
-            // Start health monitoring task
             let screenpipe_clone = screenpipe.clone();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -92,6 +90,7 @@ pub fn run() {
             commands::set_deepgram_mute,
             transcription::speaker::get_speaker_diarization_enabled,
             transcription::speaker::set_speaker_diarization_enabled,
+            transcription::capabilities::get_speech_capabilities,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

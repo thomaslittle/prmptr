@@ -4,6 +4,10 @@ import { useState, useCallback, useEffect } from "react";
 import { db } from "@/lib/db";
 import type { DBSession } from "@/lib/db";
 import type { SessionConfig, SessionSummary, ResponseEntry, FeedItem } from "@/lib/types";
+import {
+    feedItemToTranscriptLine,
+    type TranscriptLine,
+} from "@/lib/transcript";
 
 function generateTitle(config: SessionConfig): string {
     const contextKeywords: Record<string, string> = {
@@ -33,17 +37,11 @@ function generateTitle(config: SessionConfig): string {
 }
 
 async function loadSessionSummaries(): Promise<SessionSummary[]> {
-    const allSessions = await db.sessions
-        .orderBy("updatedAt")
-        .reverse()
-        .toArray();
+    const allSessions = await db.sessions.orderBy("updatedAt").reverse().toArray();
 
     const summaries: SessionSummary[] = await Promise.all(
         allSessions.map(async (s: DBSession) => {
-            const count = await db.responses
-                .where("sessionId")
-                .equals(s.id)
-                .count();
+            const count = await db.responses.where("sessionId").equals(s.id).count();
             return {
                 id: s.id,
                 title: s.title,
@@ -100,23 +98,53 @@ export function useSessionHistory() {
     );
 
     const loadSession = useCallback(
-        async (id: string): Promise<{ config: SessionConfig; responses: ResponseEntry[]; feedItems: FeedItem[] } | null> => {
+        async (
+            id: string
+        ): Promise<{
+            config: SessionConfig;
+            responses: ResponseEntry[];
+            feedItems: FeedItem[];
+            transcriptLines: TranscriptLine[];
+        } | null> => {
             const session = await db.sessions.get(id);
             if (!session) return null;
 
-            const responses = await db.responses
-                .where("sessionId")
-                .equals(id)
-                .reverse()
-                .sortBy("timestamp");
-
+            const responses = await db.responses.where("sessionId").equals(id).sortBy("timestamp");
             responses.sort((a, b) => (b.timestamp > a.timestamp ? 1 : -1));
 
-            const feedRows = await db.feedItems
+            const feedRows = await db.feedItems.where("sessionId").equals(id).sortBy("timestamp");
+            feedRows.sort((a, b) => (b.timestamp > a.timestamp ? 1 : -1));
+
+            const persistedTranscriptRows = await db.transcriptLines
                 .where("sessionId")
                 .equals(id)
-                .sortBy("timestamp");
-            feedRows.sort((a, b) => (b.timestamp > a.timestamp ? 1 : -1));
+                .toArray();
+            persistedTranscriptRows.sort(
+                (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+            );
+
+            // Existing databases predate canonical transcript storage. Convert
+            // their durable audio feed rows on read so old sessions remain usable
+            // without destructive migration or silently losing speaker identity.
+            const transcriptLines: TranscriptLine[] =
+                persistedTranscriptRows.length > 0
+                    ? persistedTranscriptRows.map(({ sessionId: _sessionId, ...line }) => line)
+                    : feedRows
+                          .filter((row) => row.type === "audio")
+                          .map((row) =>
+                              feedItemToTranscriptLine({
+                                  id: row.id,
+                                  type: row.type,
+                                  content: row.content,
+                                  timestamp: row.timestamp,
+                                  source: row.source,
+                                  windowName: row.windowName,
+                                  speaker: row.speaker,
+                                  speakerLabel: row.speakerLabel,
+                                  deviceType: row.deviceType,
+                                  isFinal: row.isFinal,
+                              })
+                          );
 
             return {
                 config: session.config,
@@ -141,25 +169,35 @@ export function useSessionHistory() {
                     deviceType: f.deviceType,
                     isFinal: f.isFinal,
                 })),
+                transcriptLines,
             };
         },
         []
     );
 
-    const saveResponse = useCallback(
-        async (sessionId: string, entry: ResponseEntry) => {
-            await db.responses.add({
-                id: entry.id,
-                sessionId,
-                content: entry.content,
-                timestamp: entry.timestamp,
-                model: entry.model,
-                type: entry.type,
-                userMessage: entry.userMessage,
-                screenshotDataUrl: entry.screenshotDataUrl,
-            });
-            await db.sessions.update(sessionId, {
-                updatedAt: new Date().toISOString(),
+    const saveResponse = useCallback(async (sessionId: string, entry: ResponseEntry) => {
+        await db.responses.add({
+            id: entry.id,
+            sessionId,
+            content: entry.content,
+            timestamp: entry.timestamp,
+            model: entry.model,
+            type: entry.type,
+            userMessage: entry.userMessage,
+            screenshotDataUrl: entry.screenshotDataUrl,
+        });
+        await db.sessions.update(sessionId, { updatedAt: new Date().toISOString() });
+    }, []);
+
+    const saveTranscriptSnapshot = useCallback(
+        async (sessionId: string, lines: TranscriptLine[]) => {
+            await db.transaction("rw", db.transcriptLines, async () => {
+                await db.transcriptLines.where("sessionId").equals(sessionId).delete();
+                if (lines.length > 0) {
+                    await db.transcriptLines.bulkAdd(
+                        lines.map((line) => ({ ...line, sessionId }))
+                    );
+                }
             });
         },
         []
@@ -167,8 +205,10 @@ export function useSessionHistory() {
 
     const saveFeedSnapshot = useCallback(
         async (sessionId: string, items: FeedItem[]) => {
-            await db.transaction("rw", db.feedItems, async () => {
+            await db.transaction("rw", db.feedItems, db.transcriptLines, async () => {
                 await db.feedItems.where("sessionId").equals(sessionId).delete();
+                await db.transcriptLines.where("sessionId").equals(sessionId).delete();
+
                 if (items.length > 0) {
                     await db.feedItems.bulkAdd(
                         items.map((item) => ({
@@ -185,29 +225,43 @@ export function useSessionHistory() {
                             isFinal: item.isFinal,
                         }))
                     );
+
+                    const canonicalAudio = items
+                        .filter((item) => item.type === "audio" && item.isFinal !== false)
+                        .map(feedItemToTranscriptLine);
+                    if (canonicalAudio.length > 0) {
+                        await db.transcriptLines.bulkAdd(
+                            canonicalAudio.map((line) => ({ ...line, sessionId }))
+                        );
+                    }
                 }
             });
         },
         []
     );
 
-    const updateSessionConfig = useCallback(
-        async (sessionId: string, config: SessionConfig) => {
-            await db.sessions.update(sessionId, {
-                config,
-                updatedAt: new Date().toISOString(),
-            });
-        },
-        []
-    );
+    const updateSessionConfig = useCallback(async (sessionId: string, config: SessionConfig) => {
+        await db.sessions.update(sessionId, {
+            config,
+            updatedAt: new Date().toISOString(),
+        });
+    }, []);
 
     const deleteSession = useCallback(
         async (id: string) => {
-            await db.transaction("rw", db.sessions, db.responses, db.feedItems, async () => {
-                await db.feedItems.where("sessionId").equals(id).delete();
-                await db.responses.where("sessionId").equals(id).delete();
-                await db.sessions.delete(id);
-            });
+            await db.transaction(
+                "rw",
+                db.sessions,
+                db.responses,
+                db.feedItems,
+                db.transcriptLines,
+                async () => {
+                    await db.transcriptLines.where("sessionId").equals(id).delete();
+                    await db.feedItems.where("sessionId").equals(id).delete();
+                    await db.responses.where("sessionId").equals(id).delete();
+                    await db.sessions.delete(id);
+                }
+            );
             await refreshList();
         },
         [refreshList]
@@ -235,6 +289,7 @@ export function useSessionHistory() {
         loadSession,
         saveResponse,
         saveFeedSnapshot,
+        saveTranscriptSnapshot,
         updateSessionConfig,
         deleteSession,
         starSession,
