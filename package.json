@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "overlay:guard": "node scripts/check-overlay-greenfield.mjs",
+    "overlay:ready": "npm run overlay:guard && vitest run lib/__tests__/overlay.test.ts && npm run typecheck",
     "speech:benchmark": "node scripts/speech-benchmark.mjs",
     "speech:benchmark:compare": "node scripts/speech-benchmark-compare.mjs",
     "speech:benchmark:test": "node scripts/speech-benchmark.test.mjs && node scripts/speech-benchmark-compare.test.mjs",
