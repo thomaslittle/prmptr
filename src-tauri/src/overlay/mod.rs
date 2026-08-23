@@ -375,6 +375,7 @@ pub async fn publish_overlay_content(
     app: tauri::AppHandle,
     manager: State<'_, OverlayManager>,
     content: OverlayContent,
+    allow_auto_show: bool,
 ) -> Result<OverlayRuntimeState, String> {
     let (enabled, config, auto_show_now) = {
         let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
@@ -385,7 +386,7 @@ pub async fn publish_overlay_content(
     if enabled {
         let window = ensure_window(&app, &config)?;
         let _ = app.emit_to(OVERLAY_LABEL, OVERLAY_CONTENT_EVENT, &content);
-        if config.auto_show_on_response && auto_show_now {
+        if allow_auto_show && config.auto_show_on_response && auto_show_now {
             window.show().map_err(|error| format!("Unable to auto-show overlay: {error}"))?;
         }
     }
@@ -412,8 +413,6 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &tauri::W
             emit_runtime(app, &manager);
         }
         tauri::WindowEvent::Destroyed => {
-            // `destroy()` does not emit this event; this reconciles external/user
-            // close paths (for example Alt+F4) back to the persisted opt-in state.
             manager.mark_destroyed();
             emit_runtime(app, &manager);
         }
