@@ -8,14 +8,14 @@ use serde::{Deserialize, Serialize};
 pub enum LocalSpeechEngine {
     #[default]
     Whisper,
-    MoonshineLegacy,
+    MoonshineSherpa,
 }
 
 impl LocalSpeechEngine {
     pub fn id(self) -> &'static str {
         match self {
             Self::Whisper => "whisper",
-            Self::MoonshineLegacy => "moonshine-sherpa",
+            Self::MoonshineSherpa => "moonshine-sherpa",
         }
     }
 }
@@ -44,8 +44,20 @@ pub fn build_engine(
             whisper_model_id,
             prefer_gpu,
         )?)),
-        LocalSpeechEngine::MoonshineLegacy => {
+        LocalSpeechEngine::MoonshineSherpa => {
             Ok(Box::new(moonshine_legacy::MoonshineLegacyEngine::new(app)?))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_ids_are_backend_neutral_and_explicit() {
+        assert_eq!(LocalSpeechEngine::Whisper.id(), "whisper");
+        assert_eq!(LocalSpeechEngine::MoonshineSherpa.id(), "moonshine-sherpa");
+        assert_eq!(serde_json::to_string(&LocalSpeechEngine::MoonshineSherpa).unwrap(), "\"moonshine-sherpa\"");
     }
 }

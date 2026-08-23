@@ -12,12 +12,30 @@ export interface SpeechDetectionDiagnostics {
     diarizationNewSpeakers: number;
 }
 
+export interface AudioPipelineSnapshot {
+    nativeSamplesReceived: number;
+    mutedNativeSamples: number;
+    conditionedSamplesEmitted: number;
+    chunksEnqueued: number;
+    chunksDropped: number;
+    samplesDropped: number;
+    captureErrors: number;
+    resamplerErrors: number;
+}
+
+export interface RuntimeAudioDiagnostics {
+    running: boolean;
+    pipeline: AudioPipelineSnapshot;
+}
+
 export interface SpeechDiagnosticBundle {
     schemaVersion: number;
     generatedAt: string;
     appVersion: string;
     capabilities: SpeechCapabilities;
     detection: SpeechDetectionDiagnostics;
+    localAudio: RuntimeAudioDiagnostics;
+    deepgramAudio: RuntimeAudioDiagnostics;
     rawAudioRetained: boolean;
     privacyNote: string;
 }

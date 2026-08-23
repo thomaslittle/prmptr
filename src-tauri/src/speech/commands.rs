@@ -1,0 +1,66 @@
+use std::sync::Arc;
+
+use serde::Serialize;
+use tauri::State;
+use tokio::sync::Mutex;
+
+use crate::speech::stream::{LocalSpeechConfig, SpeechStreamManager};
+use crate::transcription::transcript::TranscriptBuffer;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechActivity {
+    pub running: bool,
+    pub input_level: f32,
+    pub output_level: f32,
+    pub input_muted: bool,
+    pub output_muted: bool,
+}
+
+#[tauri::command]
+pub async fn start_speech_transcription(
+    app: tauri::AppHandle,
+    speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
+    transcript: State<'_, Arc<Mutex<TranscriptBuffer>>>,
+    config: LocalSpeechConfig,
+) -> Result<(), String> {
+    let mut manager = speech.lock().await;
+    manager.start(app, config, transcript.inner().clone())
+}
+
+#[tauri::command]
+pub async fn stop_speech_transcription(
+    speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
+) -> Result<(), String> {
+    let mut manager = speech.lock().await;
+    manager.stop();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_speech_mute(
+    speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
+    channel: String,
+    muted: bool,
+) -> Result<(), String> {
+    if channel != "input" && channel != "output" {
+        return Err("Speech channel must be 'input' or 'output'".to_string());
+    }
+    let manager = speech.lock().await;
+    manager.set_mute(&channel, muted);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_speech_activity(
+    speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
+) -> Result<SpeechActivity, String> {
+    let manager = speech.lock().await;
+    Ok(SpeechActivity {
+        running: manager.is_running(),
+        input_level: manager.input_level(),
+        output_level: manager.output_level(),
+        input_muted: manager.input_muted(),
+        output_muted: manager.output_muted(),
+    })
+}

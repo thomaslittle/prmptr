@@ -46,7 +46,7 @@ impl From<LocalWhisperConfig> for crate::speech::stream::LocalSpeechConfig {
             whisper_model_id: value.whisper_model_id,
             prefer_gpu: value.prefer_gpu,
             engine: if value.use_moonshine {
-                crate::speech::engines::LocalSpeechEngine::MoonshineLegacy
+                crate::speech::engines::LocalSpeechEngine::MoonshineSherpa
             } else {
                 crate::speech::engines::LocalSpeechEngine::Whisper
             },

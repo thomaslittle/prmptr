@@ -11,6 +11,9 @@ export interface SpeechCapabilities {
     systemCapture: CaptureCapability;
     diarizationAvailable: boolean;
     localEngines: string[];
+    canonicalTranscriptEvent: boolean;
+    boundedAudioQueue: boolean;
+    conditionedSampleRateHz: number;
 }
 
 export async function getSpeechCapabilities(): Promise<SpeechCapabilities> {
@@ -32,6 +35,9 @@ export async function getSpeechCapabilities(): Promise<SpeechCapabilities> {
             },
             diarizationAvailable: false,
             localEngines: [],
+            canonicalTranscriptEvent: false,
+            boundedAudioQueue: false,
+            conditionedSampleRateHz: 0,
         };
     }
 

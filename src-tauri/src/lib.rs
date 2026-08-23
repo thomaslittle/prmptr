@@ -8,12 +8,12 @@ pub mod transcription;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tauri::{Manager, Emitter};
+use tauri::{Emitter, Manager};
 
 use screenpipe::manager::ScreenpipeManager;
 use session::manager::SessionManager;
+use speech::deepgram::DirectDeepgramStreamManager;
 use speech::stream::SpeechStreamManager;
-use transcription::deepgram_stream::DirectDeepgramStreamManager;
 use transcription::transcript::TranscriptBuffer;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -89,6 +89,10 @@ pub fn run() {
             commands::update_direct_deepgram_transcription,
             commands::stop_direct_deepgram_transcription,
             commands::set_deepgram_mute,
+            speech::commands::start_speech_transcription,
+            speech::commands::stop_speech_transcription,
+            speech::commands::set_speech_mute,
+            speech::commands::get_speech_activity,
             transcription::speaker::get_speaker_diarization_enabled,
             transcription::speaker::set_speaker_diarization_enabled,
             transcription::capabilities::get_speech_capabilities,

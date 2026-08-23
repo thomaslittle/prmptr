@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::speech::audio::{platform, SPEECH_SAMPLE_RATE};
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureCapability {
@@ -17,89 +19,71 @@ pub struct SpeechCapabilities {
     pub system_capture: CaptureCapability,
     pub diarization_available: bool,
     pub local_engines: Vec<&'static str>,
+    pub canonical_transcript_event: bool,
+    pub bounded_audio_queue: bool,
+    pub conditioned_sample_rate_hz: u32,
 }
 
 #[cfg(target_os = "windows")]
-fn platform_capabilities() -> SpeechCapabilities {
-    SpeechCapabilities {
-        platform: "windows",
-        microphone_capture: CaptureCapability {
-            available: true,
-            backend: "cpal/wasapi",
-            status: "implemented",
-            detail: "Microphone capture uses the native CPAL/WASAPI path.",
-        },
-        system_capture: CaptureCapability {
-            available: true,
-            backend: "wasapi-loopback",
-            status: "implemented",
-            detail: "System output is captured through the current WASAPI loopback path.",
-        },
-        diarization_available: true,
-        local_engines: vec!["whisper", "moonshine-sherpa"],
-    }
-}
+fn platform_name() -> &'static str { "windows" }
+#[cfg(target_os = "windows")]
+fn microphone_backend() -> &'static str { "wasapi-cpal" }
+#[cfg(target_os = "windows")]
+fn microphone_detail() -> &'static str { "Microphone capture uses the native CPAL/WASAPI path." }
 
 #[cfg(target_os = "macos")]
-fn platform_capabilities() -> SpeechCapabilities {
-    SpeechCapabilities {
-        platform: "macos",
-        microphone_capture: CaptureCapability {
-            available: true,
-            backend: "cpal/coreaudio",
-            status: "implemented",
-            detail: "Microphone capture uses CPAL/CoreAudio when permission is granted.",
-        },
-        system_capture: CaptureCapability {
-            available: false,
-            backend: "none",
-            status: "not_implemented",
-            detail: "System-output capture requires the planned ScreenCaptureKit/CoreAudio implementation and is not silently emulated.",
-        },
-        diarization_available: true,
-        local_engines: vec!["whisper", "moonshine-sherpa"],
-    }
-}
+fn platform_name() -> &'static str { "macos" }
+#[cfg(target_os = "macos")]
+fn microphone_backend() -> &'static str { "coreaudio-cpal" }
+#[cfg(target_os = "macos")]
+fn microphone_detail() -> &'static str { "Microphone capture uses CPAL/CoreAudio when permission is granted." }
 
 #[cfg(target_os = "linux")]
-fn platform_capabilities() -> SpeechCapabilities {
-    SpeechCapabilities {
-        platform: "linux",
-        microphone_capture: CaptureCapability {
-            available: true,
-            backend: "cpal",
-            status: "implemented",
-            detail: "Microphone capture uses the current CPAL host backend.",
-        },
-        system_capture: CaptureCapability {
-            available: false,
-            backend: "none",
-            status: "not_implemented",
-            detail: "PipeWire/Pulse monitor capture is planned but not implemented; output capture is reported unavailable.",
-        },
-        diarization_available: true,
-        local_engines: vec!["whisper", "moonshine-sherpa"],
-    }
-}
+fn platform_name() -> &'static str { "linux" }
+#[cfg(target_os = "linux")]
+fn microphone_backend() -> &'static str { "cpal-pipewire-pulse" }
+#[cfg(target_os = "linux")]
+fn microphone_detail() -> &'static str { "Microphone capture uses CPAL through the active PipeWire/PulseAudio backend." }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn platform_name() -> &'static str { "unsupported" }
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn microphone_backend() -> &'static str { "none" }
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn microphone_detail() -> &'static str { "Native speech capture is not implemented for this platform." }
+
 fn platform_capabilities() -> SpeechCapabilities {
+    let supported_platform = matches!(platform_name(), "windows" | "macos" | "linux");
+    let system_available = platform::supports_system_capture();
     SpeechCapabilities {
-        platform: "unsupported",
+        platform: platform_name(),
         microphone_capture: CaptureCapability {
-            available: false,
-            backend: "none",
-            status: "unsupported",
-            detail: "Native speech capture is not implemented for this platform.",
+            available: supported_platform,
+            backend: microphone_backend(),
+            status: if supported_platform { "implemented" } else { "unsupported" },
+            detail: microphone_detail(),
         },
         system_capture: CaptureCapability {
-            available: false,
-            backend: "none",
-            status: "unsupported",
-            detail: "Native system-output capture is not implemented for this platform.",
+            available: system_available,
+            backend: if system_available { platform::backend_name() } else { "none" },
+            status: if system_available {
+                "implemented"
+            } else if supported_platform {
+                "not_implemented"
+            } else {
+                "unsupported"
+            },
+            detail: platform::system_capture_detail(),
         },
-        diarization_available: false,
-        local_engines: Vec::new(),
+        diarization_available: supported_platform,
+        local_engines: if supported_platform {
+            vec!["whisper", "moonshine-sherpa"]
+        } else {
+            Vec::new()
+        },
+        canonical_transcript_event: true,
+        bounded_audio_queue: true,
+        conditioned_sample_rate_hz: SPEECH_SAMPLE_RATE,
     }
 }
 
@@ -113,7 +97,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capabilities_never_claim_unknown_system_capture() {
+    fn capabilities_never_claim_an_unavailable_system_backend_is_implemented() {
         let caps = platform_capabilities();
         if caps.system_capture.available {
             assert_eq!(caps.system_capture.status, "implemented");
@@ -121,5 +105,13 @@ mod tests {
         } else {
             assert_ne!(caps.system_capture.status, "implemented");
         }
+    }
+
+    #[test]
+    fn canonical_contract_reports_the_conditioned_rate() {
+        let caps = platform_capabilities();
+        assert!(caps.canonical_transcript_event);
+        assert!(caps.bounded_audio_queue);
+        assert_eq!(caps.conditioned_sample_rate_hz, 16_000);
     }
 }
