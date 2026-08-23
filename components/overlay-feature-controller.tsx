@@ -38,7 +38,7 @@ export default function OverlayFeatureController() {
     const desktopRuntime = isTauri();
     const nativeConfig = useMemo(() => overlayWindowConfig(preferences), [preferences]);
 
-    const publishLiveSnapshot = useCallback(async () => {
+    const publishLiveSnapshot = useCallback(async (allowAutoShow = true) => {
         const overlayPreferences = useOverlayStore.getState().preferences;
         if (!overlayPreferences.enabled || previewActive.current) return;
         const session = useSessionStore.getState();
@@ -55,7 +55,7 @@ export default function OverlayFeatureController() {
         if (hash === lastPayloadHash.current) return;
         lastPayloadHash.current = hash;
         try {
-            applyRuntime(await publishOverlayContent(content));
+            applyRuntime(await publishOverlayContent(content, allowAutoShow));
             setLastError(null);
         } catch (error) {
             lastPayloadHash.current = "";
@@ -211,7 +211,9 @@ export default function OverlayFeatureController() {
                 previewActive.current = false;
                 setIsPreviewing(false);
                 lastPayloadHash.current = "";
-                await publishLiveSnapshot();
+                // Restoring real application content is synchronization, not a
+                // new response. Respect a tester who hid the preview window.
+                await publishLiveSnapshot(false);
             }
         }
     }, [applyRuntime, publishLiveSnapshot, setLastError]);
