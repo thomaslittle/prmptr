@@ -178,6 +178,11 @@ pub fn spawn_capture_thread(
 ) -> Result<std::thread::JoinHandle<()>, String> {
     platform::validate_track(spec.track)?;
 
+    #[cfg(target_os = "macos")]
+    if spec.track == AudioTrackId::System {
+        return platform::spawn_system_capture_thread(running, muted, level, tx, metrics);
+    }
+
     Ok(std::thread::spawn(move || {
         let label = spec.track.as_str();
         let device = match resolve_device(&spec) {
