@@ -1,4 +1,4 @@
-const fs = require('fs');
+import fs from 'node:fs';
 let s = fs.readFileSync('app/landing/page.tsx', 'utf8');
 
 // Find all runs of 3+ consecutive hyphens (single hyphens are legitimate in code)

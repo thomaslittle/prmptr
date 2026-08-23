@@ -1,4 +1,4 @@
-const fs = require('fs');
+import fs from 'node:fs';
 let s = fs.readFileSync('app/landing/page.tsx', 'latin1');
 
 // Fix multi-byte UTF-8 sequences mangled through cp1252/latin1 round-trips.

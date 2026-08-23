@@ -1,4 +1,4 @@
-const fs = require('fs');
+import fs from 'node:fs';
 let s = fs.readFileSync('app/landing/page.tsx', 'utf8');
 
 // Fix footer provider separators (in span elements)

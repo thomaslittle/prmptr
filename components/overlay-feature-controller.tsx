@@ -110,7 +110,15 @@ export default function OverlayFeatureController() {
         if (preferences.enabled) return;
         previewGeneration.current += 1;
         previewActive.current = false;
-        setIsPreviewing(false);
+        // Reset preview UI state asynchronously so a disable event does not
+        // trigger a cascading synchronous re-render inside the effect.
+        let cancelled = false;
+        void Promise.resolve().then(() => {
+            if (!cancelled) setIsPreviewing(false);
+        });
+        return () => {
+            cancelled = true;
+        };
     }, [preferences.enabled]);
 
     const toggleFeature = useCallback(async () => {

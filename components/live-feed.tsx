@@ -200,7 +200,7 @@ export default memo(function LiveFeed({
                                             </span>
                                         )}
                                         {isOutput && (
-                                            editingSpeaker?.key === speakerKey ? (
+                                            editingSpeaker != null && editingSpeaker.key === speakerKey ? (
                                                 <input
                                                     autoFocus
                                                     value={editingSpeaker.value}
