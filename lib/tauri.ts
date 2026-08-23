@@ -190,7 +190,9 @@ export async function startLocalTranscription(
     outputDeviceName?: string,
     whisperModelId?: string,
     preferGpu?: boolean,
-    useMoonshine?: boolean
+    useMoonshine?: boolean,
+    muteInput?: boolean,
+    muteOutput?: boolean
 ): Promise<void> {
     if (!isTauri()) throw new Error("Local transcription requires Tauri");
     const { invoke } = await import("@tauri-apps/api/core");
@@ -200,12 +202,16 @@ export async function startLocalTranscription(
         whisper_model_id: whisperModelId ?? null,
         prefer_gpu: preferGpu ?? null,
         use_moonshine: useMoonshine ?? null,
+        mute_input: muteInput ?? null,
+        mute_output: muteOutput ?? null,
         // Compatibility: support builds that expect camelCase argument mapping.
         inputDeviceName: inputDeviceName ?? null,
         outputDeviceName: outputDeviceName ?? null,
         whisperModelId: whisperModelId ?? null,
         preferGpu: preferGpu ?? null,
         useMoonshine: useMoonshine ?? null,
+        muteInput: muteInput ?? null,
+        muteOutput: muteOutput ?? null,
     });
 }
 
@@ -356,6 +362,38 @@ export async function stopLocalTranscription(): Promise<void> {
     return invoke("stop_local_transcription");
 }
 
+/** Live per-channel mute — no stop/restart. Channel is "input" or "output". */
+export async function setLocalMute(channel: "input" | "output", muted: boolean): Promise<void> {
+    if (!isTauri()) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("set_local_mute", { channel, muted });
+}
+
+export interface LocalActivity {
+    input_level: number;
+    output_level: number;
+    input_muted: boolean;
+    output_muted: boolean;
+}
+
+export async function getLocalActivity(): Promise<LocalActivity> {
+    if (!isTauri()) {
+        return { input_level: 0, output_level: 0, input_muted: false, output_muted: false };
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_local_activity");
+}
+
+export async function onLocalTranscriptionActivity(
+    handler: (activity: LocalActivity) => void
+): Promise<() => void> {
+    if (!isTauri()) return () => {};
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<LocalActivity>("local-transcription-activity", (event) => {
+        handler(event.payload);
+    });
+}
+
 export async function startDirectDeepgramTranscription(
     apiKey: string,
     inputDeviceName?: string,
@@ -406,6 +444,12 @@ export async function stopDirectDeepgramTranscription(): Promise<void> {
     if (!isTauri()) return;
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("stop_direct_deepgram_transcription");
+}
+
+export async function setDeepgramMute(channel: "input" | "output", muted: boolean): Promise<void> {
+    if (!isTauri()) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("set_deepgram_mute", { channel, muted });
 }
 
 export async function captureNativeScreenshotViaTauri(): Promise<string | null> {

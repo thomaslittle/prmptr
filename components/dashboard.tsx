@@ -24,6 +24,68 @@ const dotClass = (state: string) => {
 const shortState = (state: string) =>
     state === "no-device" ? "no dev" : state;
 
+const EQ_BAR_COUNT = 22;
+
+/**
+ * Live per-channel waveform that fills the pill. Bars are not a looping CSS
+ * pulse — each bar's height comes from a rolling history of the actual live
+ * level, so the shape genuinely follows the audio as it arrives (spiky and
+ * moving while speaking, settling to a faint baseline when idle, flat when
+ * muted). Newest sample is the rightmost bar; older samples trail left.
+ */
+function ChannelWaveform({ level, active, muted }: { level: number; active: boolean; muted: boolean }) {
+    // Rolling buffer of the last `EQ_BAR_COUNT` level samples (0..1), newest last.
+    const [history, setHistory] = useState<number[]>(() => Array(EQ_BAR_COUNT).fill(0));
+    const levelRef = useRef(0);
+    const activeRef = useRef(false);
+    const mutedRef = useRef(false);
+    // Always render a thin baseline even when silent/muted so the strip reads
+    // as an active control area rather than empty space.
+    const BASELINE = 0.05;
+
+    useEffect(() => {
+        levelRef.current = muted ? 0 : active ? Math.max(0, Math.min(1, level)) : 0;
+        activeRef.current = active;
+        mutedRef.current = muted;
+    }, [level, active, muted]);
+
+    // Push a new sample into the buffer whenever the live level changes (it is
+    // pushed roughly every 120ms from the backend, interpolated here via a
+    // fast interval for a smoother visual). Lightweight: only mutates a ref
+    // and flush-steps state so React doesn't re-render on every micro-step.
+    useEffect(() => {
+        const id = window.setInterval(() => {
+            setHistory((prev) => {
+                const next = prev.slice(1);
+                next.push(Math.max(levelRef.current, activeRef.current && !mutedRef.current ? 0 : BASELINE));
+                return next;
+            });
+        }, 60);
+        return () => window.clearInterval(id);
+    }, []);
+
+    return (
+        <span className="flex h-[calc(100%-8px)] flex-1 items-end gap-[1.5px]" aria-hidden="true">
+            {history.map((h, i) => (
+                <span
+                    key={i}
+                    className={cn("flex-1 rounded-[1px] transition-[height] duration-100 ease-out")}
+                    style={{
+                        height: `${Math.max(h, BASELINE) * 100}%`,
+                        background: muted
+                            ? "oklch(0.55 0.02 80 / 0.5)"
+                            : active
+                                ? `oklch(${0.72 + h * 0.14} ${0.14 + h * 0.05} 65 / ${0.55 + h * 0.45})`
+                                : "oklch(0.5 0.02 80 / 0.35)",
+                        boxShadow: active && !muted ? `0 0 6px oklch(0.8 0.16 65 / ${h * 0.5})` : undefined,
+                    }}
+                />
+            ))}
+        </span>
+    );
+}
+
+
 import { usePanelRef } from "react-resizable-panels";
 import type { Layout } from "react-resizable-panels";
 import { useSettingsStore } from "@/lib/stores/settings-store";
@@ -48,11 +110,14 @@ import {
     stopDirectDeepgramTranscription,
     updateDirectDeepgramTranscription,
     onLocalTranscriptionStatus,
+    setLocalMute,
+    onLocalTranscriptionActivity,
+    setDeepgramMute,
 } from "@/lib/tauri";
 import { useLocalTranscription } from "@/hooks/use-local-transcription";
 import type { FeedItem } from "@/lib/types";
 import { useShortcutManager } from "@/hooks/use-shortcut-manager";
-import { GearSix, X, CircleNotch, Download, ArrowSquareOut, Ear, CaretLeft, CaretRight, SpeakerSlash, Microphone, MicrophoneSlash, SpeakerHigh } from "@phosphor-icons/react";
+import { GearSix, X, CircleNotch, Download, ArrowSquareOut, Ear, CaretLeft, CaretRight, SpeakerSlash } from "@phosphor-icons/react";
 import type { ResponseEntry, SessionConfig } from "@/lib/types";
 import LiveFeed from "./live-feed";
 import AiResponse from "./ai-response";
@@ -183,6 +248,30 @@ export default function Dashboard() {
             });
         }
     }, [mounted, loadSession, setResponses, setCurrentSessionId]);
+
+    // A WebView refresh/reload keeps the Tauri process (and its Rust-side
+    // transcription `running` flags) alive, so the frontend can come back up
+    // into a stale "Local transcription already running" state. On a fresh
+    // page load (mounted + Tauri), defensively stop any lingering session so
+    // the user always starts clean. Both stop commands are idempotent — the
+    // Rust side no-ops when nothing is running.
+    const didStaleCleanup = useRef(false);
+    useEffect(() => {
+        if (!mounted || !isTauri() || didStaleCleanup.current) return;
+        didStaleCleanup.current = true;
+        const cleanup = async () => {
+            try {
+                await stopLocalTranscription();
+            } catch {}
+            try {
+                await stopDirectDeepgramTranscription();
+            } catch {}
+            setLocalWhisperRunning(false);
+            setDirectDeepgramRunning(false);
+        };
+        void cleanup();
+    }, [mounted]);
+
 
     // Auto-select default audio device on first launch
     useEffect(() => {
@@ -624,6 +713,8 @@ export default function Dashboard() {
 
         if (isLocalWhisper) {
             if (localWhisperRunning) {
+                pendingActionRef.current = "stopping";
+                setPendingAction("stopping");
                 setLocalWhisperLoading(true);
                 try {
                     await stopLocalTranscription();
@@ -631,9 +722,13 @@ export default function Dashboard() {
                 } catch (err) {
                     console.error("Failed to stop local transcription:", err);
                 } finally {
+                    pendingActionRef.current = null;
+                    setPendingAction(null);
                     setLocalWhisperLoading(false);
                 }
             } else {
+                pendingActionRef.current = "starting";
+                setPendingAction("starting");
                 setLocalWhisperLoading(true);
                 setScreenpipeError(null);
                 try {
@@ -645,7 +740,9 @@ export default function Dashboard() {
                         settings.outputDevice,
                         undefined,
                         settings.localPreferGpu,
-                        (settings.localSttEngine ?? "whisper") === "moonshine"
+                        (settings.localSttEngine ?? "whisper") === "moonshine",
+                        settings.muteInput,
+                        settings.muteOutput
                     );
                     setLocalWhisperRunning(true);
                     setIsLiveFeed(true);
@@ -653,11 +750,15 @@ export default function Dashboard() {
                     const message = err instanceof Error ? err.message : String(err);
                     setScreenpipeError(message);
                 } finally {
+                    pendingActionRef.current = null;
+                    setPendingAction(null);
                     setLocalWhisperLoading(false);
                 }
             }
         } else if (isDirectDeepgram) {
             if (directDeepgramRunning) {
+                pendingActionRef.current = "stopping";
+                setPendingAction("stopping");
                 setDirectDeepgramLoading(true);
                 try {
                     await stopDirectDeepgramTranscription();
@@ -665,6 +766,8 @@ export default function Dashboard() {
                 } catch (err) {
                     console.error("Failed to stop direct deepgram transcription:", err);
                 } finally {
+                    pendingActionRef.current = null;
+                    setPendingAction(null);
                     setDirectDeepgramLoading(false);
                 }
             } else {
@@ -672,6 +775,8 @@ export default function Dashboard() {
                     setScreenpipeError("Deepgram API key is required for Direct Deepgram mode.");
                     return;
                 }
+                pendingActionRef.current = "starting";
+                setPendingAction("starting");
                 setDirectDeepgramLoading(true);
                 setScreenpipeError(null);
                 try {
@@ -691,6 +796,8 @@ export default function Dashboard() {
                     const message = err instanceof Error ? err.message : String(err);
                     setScreenpipeError(message);
                 } finally {
+                    pendingActionRef.current = null;
+                    setPendingAction(null);
                     setDirectDeepgramLoading(false);
                 }
             }
@@ -739,6 +846,39 @@ export default function Dashboard() {
         settings.deepgramApiKey,
         settings.enableVision,
     ]);
+
+    // Live audio-activity: the backend emits per-channel levels while capturing,
+    // independent of transcription finality, so "You"/"Them" show ACTIVE during
+    // real audio and IDLE otherwise. Muting a channel drops its level too, so the
+    // indicator clearly reflects the mute state.
+    const [inputLevel, setInputLevel] = useState(0);
+    const [outputLevel, setOutputLevel] = useState(0);
+    useEffect(() => {
+        if (!isTauri()) return;
+        let unlisten: (() => void) | null = null;
+        onLocalTranscriptionActivity((a) => {
+            setInputLevel(a.input_level);
+            setOutputLevel(a.output_level);
+        }).then((fn) => (unlisten = fn));
+        return () => unlisten?.();
+    }, []);
+
+    // Live soft-mute: toggling "You"/"Them" flips the backend flag so the muted
+    // channel stops feeding the transcript — no stop/restart of the engine.
+    const handleMaskMute = useCallback(
+        (channel: "input" | "output", muted: boolean) => {
+            setSettings({
+                ...settings,
+                ...(channel === "input" ? { muteInput: muted } : { muteOutput: muted }),
+            });
+            if (isLocalWhisper && localWhisperRunning) {
+                void setLocalMute(channel, muted);
+            } else if (isDirectDeepgram && directDeepgramRunning) {
+                void setDeepgramMute(channel, muted);
+            }
+        },
+        [isLocalWhisper, isDirectDeepgram, localWhisperRunning, directDeepgramRunning, settings, setSettings]
+    );
 
     // Unified keyboard shortcuts (browser keydown + Tauri OS-level)
     useShortcutManager({
@@ -807,8 +947,16 @@ export default function Dashboard() {
         return { lastInputMs, lastOutputMs };
     }, [visibleLiveItems, settings.audioDevice, settings.outputDevice]);
 
-    const inputActive = livePolling && activityNowMs - audioActivity.lastInputMs < 1200;
-    const outputActive = livePolling && activityNowMs - audioActivity.lastOutputMs < 1200;
+    // Live per-channel activity from the backend (Whisper/Moonshine). When a
+    // channel is muted its level is forced to 0 by the backend, so the indicator
+    // clearly shows muted vs actively-receiving audio.
+    const levelActive = isLocalWhisper && localWhisperRunning;
+    const inputActive =
+        (levelActive ? inputLevel > 0.003 : activityNowMs - audioActivity.lastInputMs < 1200) &&
+        livePolling;
+    const outputActive =
+        (levelActive ? outputLevel > 0.003 : activityNowMs - audioActivity.lastOutputMs < 1200) &&
+        livePolling;
     const inputState = connectionStatus !== "connected"
         ? "offline"
         : settings.muteInput
@@ -879,39 +1027,41 @@ export default function Dashboard() {
                         <div className="flex items-center gap-1.5 mr-1">
                             <button
                                 type="button"
-                                onClick={() => setSettings({ ...settings, muteInput: !settings.muteInput })}
+                                onClick={() => handleMaskMute("input", !settings.muteInput)}
                                 className={cn(
-                                    "inline-flex items-center gap-1.5 border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition-colors",
+                                    "inline-flex h-[26px] w-[168px] items-center justify-between gap-1.5 border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition-colors",
                                     pillClass(inputState, "you")
                                 )}
                                 title={`You ${shortState(inputState)} • click to ${settings.muteInput ? "unmute" : "mute"}`}
                             >
-                                <span className={cn("size-1.5 rounded-full", dotClass(inputState))} />
-                                <span className="font-medium">You</span>
-                                <span className="text-[9px] opacity-80">{shortState(inputState)}</span>
-                                {settings.muteInput ? (
-                                    <MicrophoneSlash weight="fill" className="size-3" />
-                                ) : (
-                                    <Microphone weight="fill" className="size-3" />
-                                )}
+                                <span className="flex shrink-0 items-center gap-1.5">
+                                    <span className={cn("size-1.5 shrink-0 rounded-full", dotClass(inputState))} />
+                                    <span className="font-medium shrink-0">You</span>
+                                </span>
+                                <ChannelWaveform
+                                    level={inputLevel}
+                                    active={inputActive}
+                                    muted={!!settings.muteInput}
+                                />
                             </button>
                             <button
                                 type="button"
-                                onClick={() => setSettings({ ...settings, muteOutput: !settings.muteOutput })}
+                                onClick={() => handleMaskMute("output", !settings.muteOutput)}
                                 className={cn(
-                                    "inline-flex items-center gap-1.5 border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition-colors",
+                                    "inline-flex h-[26px] w-[168px] items-center justify-between gap-1.5 border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition-colors",
                                     pillClass(outputState, "them")
                                 )}
                                 title={`Them ${shortState(outputState)} • click to ${settings.muteOutput ? "unmute" : "mute"}`}
                             >
-                                <span className={cn("size-1.5 rounded-full", dotClass(outputState))} />
-                                <span className="font-medium">Them</span>
-                                <span className="text-[9px] opacity-80">{shortState(outputState)}</span>
-                                {settings.muteOutput ? (
-                                    <SpeakerSlash weight="fill" className="size-3" />
-                                ) : (
-                                    <SpeakerHigh weight="fill" className="size-3" />
-                                )}
+                                <span className="flex shrink-0 items-center gap-1.5">
+                                    <span className={cn("size-1.5 shrink-0 rounded-full", dotClass(outputState))} />
+                                    <span className="font-medium shrink-0">Them</span>
+                                </span>
+                                <ChannelWaveform
+                                    level={outputLevel}
+                                    active={outputActive}
+                                    muted={!!settings.muteOutput}
+                                />
                             </button>
                         </div>
                     )}

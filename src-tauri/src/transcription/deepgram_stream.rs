@@ -124,6 +124,7 @@ fn spawn_capture_thread(
     device_name: Option<String>,
     is_output: bool,
     running: Arc<AtomicBool>,
+    mute_flag: Arc<AtomicBool>,
     tx: mpsc::UnboundedSender<Vec<f32>>,
     label: &'static str,
 ) -> std::thread::JoinHandle<()> {
@@ -213,11 +214,17 @@ fn spawn_capture_thread(
 
         let running_cb = running.clone();
         let tx_cb = tx.clone();
+        let mute_cb = mute_flag.clone();
 
         let stream = device.build_input_stream(
             &stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 if !running_cb.load(Ordering::Relaxed) {
+                    return;
+                }
+                // Soft-mute: a muted channel drops its audio so it never reaches
+                // the Deepgram worker — the capture stream keeps running.
+                if mute_cb.load(Ordering::Relaxed) {
                     return;
                 }
                 let mono = if native_channels > 1 {
@@ -449,6 +456,9 @@ fn spawn_deepgram_worker_thread(
 pub struct DirectDeepgramStreamManager {
     running: Arc<AtomicBool>,
     threads: Vec<std::thread::JoinHandle<()>>,
+    /// Live per-channel mute flags (soft-mute, no restart).
+    mute_input: Arc<AtomicBool>,
+    mute_output: Arc<AtomicBool>,
 }
 
 fn is_output_style_device_name(name: &str) -> bool {
@@ -460,6 +470,16 @@ impl DirectDeepgramStreamManager {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             threads: Vec::new(),
+            mute_input: Arc::new(AtomicBool::new(false)),
+            mute_output: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn set_mute(&self, channel: &str, muted: bool) {
+        match channel {
+            "input" => self.mute_input.store(muted, Ordering::Relaxed),
+            "output" => self.mute_output.store(muted, Ordering::Relaxed),
+            _ => {}
         }
     }
 
@@ -474,10 +494,12 @@ impl DirectDeepgramStreamManager {
         if config.api_key.trim().is_empty() {
             return Err("Deepgram API key is required for direct mode".to_string());
         }
-        let has_input = !config.mute_input;
-        let has_output = config.output_device_name.is_some() && !config.mute_output;
+        // At least one capture device must be configured. Both channels can be
+        // muted at start and unmuted live (mute is a soft-mute, not a restart).
+        let has_input = config.input_device_name.is_some();
+        let has_output = config.output_device_name.is_some();
         if !has_input && !has_output {
-            return Err("At least one of input or output must be unmuted for direct capture.".to_string());
+            return Err("At least one of input or output must be configured for direct capture.".to_string());
         }
         if let Some(ref input) = config.input_device_name {
             if !input.ends_with(" (input)") {
@@ -501,12 +523,19 @@ impl DirectDeepgramStreamManager {
         self.running = running.clone();
         self.threads.clear();
 
-        if !config.mute_input {
+        // Live soft-mute flags. Both channels are always captured when a device
+        // is configured; a muted channel's samples are dropped in the callback so
+        // mute toggles apply without restarting the pipeline.
+        self.mute_input.store(config.mute_input, Ordering::Relaxed);
+        self.mute_output.store(config.mute_output, Ordering::Relaxed);
+
+        if config.input_device_name.is_some() {
             let (in_tx, in_rx) = mpsc::unbounded_channel::<Vec<f32>>();
             let input_capture = spawn_capture_thread(
                 config.input_device_name,
                 false,
                 running.clone(),
+                self.mute_input.clone(),
                 in_tx,
                 "input",
             );
@@ -521,7 +550,7 @@ impl DirectDeepgramStreamManager {
             self.threads.push(input_worker);
         }
 
-        if config.output_device_name.is_some() && !config.mute_output {
+        if config.output_device_name.is_some() {
             let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<f32>>();
             let output_is_output = config
                 .output_device_name
@@ -532,6 +561,7 @@ impl DirectDeepgramStreamManager {
                 config.output_device_name,
                 output_is_output,
                 running.clone(),
+                self.mute_output.clone(),
                 out_tx,
                 "output",
             );

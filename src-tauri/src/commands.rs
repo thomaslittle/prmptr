@@ -294,6 +294,8 @@ pub async fn start_local_transcription(
     whisper_model_id: Option<String>,
     prefer_gpu: Option<bool>,
     use_moonshine: Option<bool>,
+    mute_input: Option<bool>,
+    mute_output: Option<bool>,
 ) -> Result<(), String> {
     let config = crate::transcription::whisper_stream::LocalWhisperConfig {
         input_device_name,
@@ -301,6 +303,8 @@ pub async fn start_local_transcription(
         whisper_model_id,
         prefer_gpu: prefer_gpu.unwrap_or(false),
         use_moonshine: use_moonshine.unwrap_or(false),
+        mute_input: mute_input.unwrap_or(false),
+        mute_output: mute_output.unwrap_or(false),
         ..Default::default()
     };
 
@@ -315,6 +319,32 @@ pub async fn stop_local_transcription(
     let mut mgr = whisper.lock().await;
     mgr.stop();
     Ok(())
+}
+
+/// Live per-channel mute: flips the shared flag the capture callbacks check, so
+/// a muted channel silently stops feeding the transcript without restarting.
+#[tauri::command]
+pub async fn set_local_mute(
+    whisper: State<'_, Arc<Mutex<crate::transcription::whisper_stream::WhisperStreamManager>>>,
+    channel: String,
+    muted: bool,
+) -> Result<(), String> {
+    let mgr = whisper.lock().await;
+    mgr.set_mute(&channel, muted);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_local_activity(
+    whisper: State<'_, Arc<Mutex<crate::transcription::whisper_stream::WhisperStreamManager>>>,
+) -> Result<serde_json::Value, String> {
+    let mgr = whisper.lock().await;
+    Ok(serde_json::json!({
+        "input_level": mgr.input_level(),
+        "output_level": mgr.output_level(),
+        "input_muted": mgr.input_muted(),
+        "output_muted": mgr.output_muted(),
+    }))
 }
 
 #[tauri::command]
@@ -382,6 +412,19 @@ pub async fn stop_direct_deepgram_transcription(
 ) -> Result<(), String> {
     let mut mgr = deepgram.lock().await;
     mgr.stop();
+    Ok(())
+}
+
+/// Live per-channel mute for direct Deepgram — flips the shared capture flag so
+/// a muted channel stops feeding audio without restarting the stream.
+#[tauri::command]
+pub async fn set_deepgram_mute(
+    deepgram: State<'_, Arc<Mutex<crate::transcription::deepgram_stream::DirectDeepgramStreamManager>>>,
+    channel: String,
+    muted: bool,
+) -> Result<(), String> {
+    let mgr = deepgram.lock().await;
+    mgr.set_mute(&channel, muted);
     Ok(())
 }
 

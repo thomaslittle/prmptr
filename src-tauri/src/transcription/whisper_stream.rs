@@ -8,6 +8,9 @@ use std::sync::Once;
 use crate::transcription::transcript::{TranscriptBuffer, TranscriptEntry};
 use crate::transcription::speaker::{SpeechDetector, SpeakerTracker};
 
+/// Small shared live-value cell for the per-channel audio-activity level.
+type AtomicMutex<T> = StdMutex<T>;
+
 // ──────────────────────────── STT Engine Abstraction ────────────────────────────
 
 /// Inference engine used for local transcription. Both variants consume
@@ -163,6 +166,13 @@ pub struct LocalWhisperConfig {
     /// When true, use Moonshine (sherpa-onnx) instead of Whisper for inference.
     #[serde(default)]
     pub use_moonshine: bool,
+    /// Mute the microphone (input/"You") channel — no audio is captured, so
+    /// nothing from it reaches the transcript/feed.
+    #[serde(default)]
+    pub mute_input: bool,
+    /// Mute the system loopback (output/"Them") channel.
+    #[serde(default)]
+    pub mute_output: bool,
     pub inference_interval_ms: u64,
 }
 
@@ -174,6 +184,8 @@ impl Default for LocalWhisperConfig {
             whisper_model_id: None,
             prefer_gpu: false,
             use_moonshine: false,
+            mute_input: false,
+            mute_output: false,
             // Short interval: VAD sees audio quickly and finalize latency stays
             // low. Drain-based reads make interval length loss-free regardless.
             inference_interval_ms: 300,
@@ -227,6 +239,18 @@ fn stereo_to_mono(input: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// RMS audio level of a mono buffer, normalized roughly to 0..1. Used purely
+/// for the UI "active" indicator on the You/Them buttons.
+fn rms_level(input: &[f32]) -> f32 {
+    if input.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = input.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    let rms = (sum / input.len() as f64).sqrt();
+    // Clamp into a 0..1 range; typical speech sits well below 1.0.
+    (rms as f32).min(1.0)
+}
+
 // ──────────────────────────── Audio Capture ────────────────────────────
 
 /// Spawn a capture thread for a given device. For output devices, this uses
@@ -236,6 +260,8 @@ fn spawn_capture_thread(
     is_output: bool,
     ring_buffer: Arc<StdMutex<AudioRingBuffer>>,
     running: Arc<AtomicBool>,
+    mute_flag: Arc<AtomicBool>,
+    level_flag: Arc<AtomicMutex<f32>>,
     label: &'static str,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -337,6 +363,8 @@ fn spawn_capture_thread(
 
         let ring_buf = ring_buffer;
         let running_cb = running.clone();
+        let mute_cb = mute_flag.clone();
+        let level_cb = level_flag.clone();
 
         let stream_config: cpal::StreamConfig = supported_config.into();
 
@@ -348,11 +376,23 @@ fn spawn_capture_thread(
                 if !running_cb.load(Ordering::Relaxed) {
                     return;
                 }
+                // Soft-mute: a muted channel silently drops its samples so it
+                // never reaches the transcript — the engine keeps running.
+                if mute_cb.load(Ordering::Relaxed) {
+                    if let Ok(mut lv) = level_cb.lock() {
+                        *lv = 0.0;
+                    }
+                    return;
+                }
                 let mono = if native_channels > 1 {
                     stereo_to_mono(data)
                 } else {
                     data.to_vec()
                 };
+                // Publish the live audio level for the UI activity indicator.
+                if let Ok(mut lv) = level_cb.lock() {
+                    *lv = rms_level(&mono);
+                }
                 let resampled = resample_linear(&mono, native_rate, SAMPLE_RATE as u32);
                 if let Ok(mut buf) = ring_buf.lock() {
                     buf.push_samples(&resampled);
@@ -579,6 +619,14 @@ fn whisper_cuda_backend_available() -> bool {
 pub struct WhisperStreamManager {
     running: Arc<AtomicBool>,
     threads: Vec<std::thread::JoinHandle<()>>,
+    /// Live per-channel mute flags shared with the audio capture callbacks so a
+    /// muted channel silently stops feeding audio without restarting the engine.
+    mute_input: Arc<AtomicBool>,
+    mute_output: Arc<AtomicBool>,
+    /// Live per-channel audio-activity level (RMS, 0..1) so the UI can show a
+    /// channel as actively receiving audio, independent of transcription finality.
+    input_level: Arc<AtomicMutex<f32>>,
+    output_level: Arc<AtomicMutex<f32>>,
 }
 
 impl WhisperStreamManager {
@@ -586,7 +634,41 @@ impl WhisperStreamManager {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             threads: Vec::new(),
+            mute_input: Arc::new(AtomicBool::new(false)),
+            mute_output: Arc::new(AtomicBool::new(false)),
+            input_level: Arc::new(AtomicMutex::new(0.0)),
+            output_level: Arc::new(AtomicMutex::new(0.0)),
         }
+    }
+
+    pub fn set_mute(&self, channel: &str, muted: bool) {
+        match channel {
+            "input" => self.mute_input.store(muted, Ordering::Relaxed),
+            "output" => self.mute_output.store(muted, Ordering::Relaxed),
+            _ => {}
+        }
+    }
+
+    pub fn input_level(&self) -> f32 {
+        match self.input_level.lock() {
+            Ok(g) => *g,
+            Err(_) => 0.0,
+        }
+    }
+
+    pub fn output_level(&self) -> f32 {
+        match self.output_level.lock() {
+            Ok(g) => *g,
+            Err(_) => 0.0,
+        }
+    }
+
+    pub fn input_muted(&self) -> bool {
+        self.mute_input.load(Ordering::Relaxed)
+    }
+
+    pub fn output_muted(&self) -> bool {
+        self.mute_output.load(Ordering::Relaxed)
     }
 
     pub fn is_running(&self) -> bool {
@@ -601,6 +683,22 @@ impl WhisperStreamManager {
     ) -> Result<(), String> {
         if self.is_running() {
             return Err("Local transcription already running".to_string());
+        }
+
+        // Per-channel mute is a *live* soft-mute: the capture threads stay
+        // running but a muted channel's samples are dropped before they reach
+        // the transcript. This lets mute toggles take effect without a restart.
+        self.mute_input.store(config.mute_input, Ordering::Relaxed);
+        self.mute_output.store(config.mute_output, Ordering::Relaxed);
+
+        // At least one capture device must be configured. Both channels can be
+        // muted at start and unmuted live (mute is a soft-mute, not a restart).
+        let has_input = config.input_device_name.is_some();
+        let has_output = config.output_device_name.is_some();
+        if !has_input && !has_output {
+            return Err(
+                "At least one of input or output must be configured for local capture.".to_string()
+            );
         }
 
         // Silence verbose whisper.cpp token-by-token stderr output.
@@ -640,34 +738,44 @@ impl WhisperStreamManager {
         let (tx, rx) = std::sync::mpsc::channel::<TranscriptionResult>();
 
         // ─── Audio Capture Threads ───
+        // Both channels are always captured (when a device is configured); the
+        // per-channel mute flag is checked live in the audio callback so a muted
+        // channel stays silent without tearing down the engine.
 
-        // Input device (microphone — "You")
-        let input_thread = spawn_capture_thread(
-            config.input_device_name.clone(),
-            false,
-            input_ring.clone(),
-            running.clone(),
-            "input",
-        );
+        let input_mute_flag = self.mute_input.clone();
+        let input_level_flag = self.input_level.clone();
+        let input_thread = config.input_device_name.as_ref().map(|_| {
+            spawn_capture_thread(
+                config.input_device_name.clone(),
+                false,
+                input_ring.clone(),
+                running.clone(),
+                input_mute_flag,
+                input_level_flag,
+                "input",
+            )
+        });
 
-        // Output device (loopback — "Them")
-        let output_thread = if config.output_device_name.is_some() {
-            Some(spawn_capture_thread(
+        let output_mute_flag = self.mute_output.clone();
+        let output_level_flag = self.output_level.clone();
+        let output_thread = config.output_device_name.as_ref().map(|_| {
+            spawn_capture_thread(
                 config.output_device_name.clone(),
                 true,
                 output_ring.clone(),
                 running.clone(),
+                output_mute_flag,
+                output_level_flag,
                 "output",
-            ))
-        } else {
-            log::info!("No output device configured, skipping loopback capture");
-            None
-        };
+            )
+        });
 
         // ─── Inference Thread (VAD-gated utterance accumulation) ───
         let running_infer = running.clone();
         let interval_ms = config.inference_interval_ms;
-        let has_output = config.output_device_name.is_some();
+        // Whether output audio is transcribed, after applying mute. Input audio
+        // is always processed (its ring simply stays empty when muted).
+        let has_output = has_output;
 
         let inference_thread = std::thread::spawn(move || {
             // ─── Build the STT engine (Moonshine or Whisper) ───
@@ -1101,6 +1209,39 @@ impl WhisperStreamManager {
             log::info!("Inference thread stopped");
         });
 
+        // ─── Activity Emitter (tokio) ───
+        // Publish live per-channel audio levels so the UI can show "active"
+        // while real audio is flowing (independent of transcription finality).
+        let app_activity = app.clone();
+        let running_activity = running.clone();
+        let input_level_activity = self.input_level.clone();
+        let output_level_activity = self.output_level.clone();
+        let input_mute_activity = self.mute_input.clone();
+        let output_mute_activity = self.mute_output.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                if !running_activity.load(Ordering::Relaxed) {
+                    break;
+                }
+                let input_level = match input_level_activity.lock() {
+                    Ok(g) => *g,
+                    Err(_) => 0.0,
+                };
+                let output_level = match output_level_activity.lock() {
+                    Ok(g) => *g,
+                    Err(_) => 0.0,
+                };
+                let payload = serde_json::json!({
+                    "input_level": input_level,
+                    "output_level": output_level,
+                    "input_muted": input_mute_activity.load(Ordering::Relaxed),
+                    "output_muted": output_mute_activity.load(Ordering::Relaxed),
+                });
+                let _ = app_activity.emit("local-transcription-activity", &payload);
+                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            }
+        });
+
         // ─── Coordinator Task (tokio) ───
         let app_handle = app.clone();
         let running_coord = running.clone();
@@ -1157,7 +1298,9 @@ impl WhisperStreamManager {
             log::info!("Coordinator task stopped");
         });
 
-        self.threads.push(input_thread);
+        if let Some(t) = input_thread {
+            self.threads.push(t);
+        }
         if let Some(t) = output_thread {
             self.threads.push(t);
         }

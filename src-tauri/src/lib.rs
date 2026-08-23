@@ -84,9 +84,12 @@ pub fn run() {
             commands::proxy_tts_list_voices,
             commands::start_local_transcription,
             commands::stop_local_transcription,
+            commands::set_local_mute,
+            commands::get_local_activity,
             commands::start_direct_deepgram_transcription,
             commands::update_direct_deepgram_transcription,
             commands::stop_direct_deepgram_transcription,
+            commands::set_deepgram_mute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
