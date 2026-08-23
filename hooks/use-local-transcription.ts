@@ -63,25 +63,25 @@ export function useLocalTranscription() {
                 feedItems: ocrItems,
                 maxTerms: preferences.maxKeyterms,
             });
-            const hash = JSON.stringify([
-                bias.context,
-                bias.keyterms,
-                preferences.contextMaxTerms,
-            ]);
+            const hash = JSON.stringify([bias.context, bias.keyterms, preferences.contextMaxTerms]);
             if (hash === lastBiasHash.current) return;
-            lastBiasHash.current = hash;
             Promise.all([
                 setSpeechContext(bias.context, preferences.contextMaxTerms),
                 setSpeechKeyterms(bias.keyterms),
-            ]).catch((error) => {
-                // Expected when the selected compatibility backend is legacy
-                // sherpa or the stream is not started yet. The next context
-                // change/start will retry without disrupting transcription.
-                console.debug("[speech-bias] live update skipped:", error);
-            });
+            ])
+                .then(() => {
+                    // Only suppress identical future updates after both native
+                    // calls succeeded. A pre-start failure must retry once the
+                    // stream becomes available.
+                    lastBiasHash.current = hash;
+                })
+                .catch((error) => {
+                    lastBiasHash.current = "";
+                    console.debug("[speech-bias] live update skipped:", error);
+                });
         }, 650);
         return () => window.clearTimeout(timer);
-    }, [ocrItems, sessionContext, preferences]);
+    }, [ocrItems, sessionContext, preferences, lines.length]);
 
     const items = useMemo(() => transcriptLinesToFeedItems(lines), [lines]);
     return { items, lines, clear };

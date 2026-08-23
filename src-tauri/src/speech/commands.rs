@@ -107,3 +107,26 @@ pub async fn install_moonshine_voice_model(
 ) -> Result<MoonshineVoiceModelStatus, String> {
     moonshine_voice::install_model(&app, arch).await
 }
+
+/// Compatibility command consumed by the existing Settings panel. In a
+/// Moonshine Voice feature build the word "Moonshine" now means the verified
+/// streaming engine; feature-off builds preserve the existing sherpa model.
+#[tauri::command]
+pub fn is_moonshine_model_installed(app: tauri::AppHandle) -> Result<bool, String> {
+    if cfg!(feature = "moonshine-voice") {
+        return Ok(moonshine_voice::model_status(&app, MoonshineVoiceArch::default())?.installed);
+    }
+    Ok(crate::transcription::model_manager::is_moonshine_installed(&app))
+}
+
+/// Compatibility installer used by the current UI. It intentionally installs
+/// Medium Streaming + word timestamps + diarization with manifest integrity
+/// checks when Moonshine Voice is compiled.
+#[tauri::command]
+pub async fn download_moonshine_model(app: tauri::AppHandle) -> Result<(), String> {
+    if cfg!(feature = "moonshine-voice") {
+        moonshine_voice::install_model(&app, MoonshineVoiceArch::default()).await?;
+        return Ok(());
+    }
+    Err("This build uses the legacy Moonshine installer; rebuild without moonshine-voice or use the legacy command path.".to_string())
+}
