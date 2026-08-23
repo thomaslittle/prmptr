@@ -9,6 +9,7 @@ pub enum LocalSpeechEngine {
     #[default]
     Whisper,
     MoonshineSherpa,
+    MoonshineVoice,
 }
 
 impl LocalSpeechEngine {
@@ -16,7 +17,12 @@ impl LocalSpeechEngine {
         match self {
             Self::Whisper => "whisper",
             Self::MoonshineSherpa => "moonshine-sherpa",
+            Self::MoonshineVoice => "moonshine-voice",
         }
+    }
+
+    pub fn is_streaming(self) -> bool {
+        matches!(self, Self::MoonshineVoice)
     }
 }
 
@@ -47,6 +53,10 @@ pub fn build_engine(
         LocalSpeechEngine::MoonshineSherpa => {
             Ok(Box::new(moonshine_legacy::MoonshineLegacyEngine::new(app)?))
         }
+        LocalSpeechEngine::MoonshineVoice => Err(
+            "Moonshine Voice is a native streaming engine and cannot run through the batch SpeechEngine path"
+                .to_string(),
+        ),
     }
 }
 
@@ -58,6 +68,8 @@ mod tests {
     fn engine_ids_are_backend_neutral_and_explicit() {
         assert_eq!(LocalSpeechEngine::Whisper.id(), "whisper");
         assert_eq!(LocalSpeechEngine::MoonshineSherpa.id(), "moonshine-sherpa");
-        assert_eq!(serde_json::to_string(&LocalSpeechEngine::MoonshineSherpa).unwrap(), "\"moonshine-sherpa\"");
+        assert_eq!(LocalSpeechEngine::MoonshineVoice.id(), "moonshine-voice");
+        assert!(LocalSpeechEngine::MoonshineVoice.is_streaming());
+        assert_eq!(serde_json::to_string(&LocalSpeechEngine::MoonshineVoice).unwrap(), "\"moonshine-voice\"");
     }
 }
