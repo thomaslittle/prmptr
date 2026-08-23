@@ -62,6 +62,8 @@ imgur-error.png
 
 tauri-dev.log
 
+tauri-gpu-dev.log
+
 tauri-build.log
 
 dev-server.log

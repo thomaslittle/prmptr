@@ -46,7 +46,7 @@ Built with **Tauri v2 + Next.js 16 + React 19 + Rust**.
 ```bash
 npm install
 
-# Dev (Next.js dev server on http://127.0.0.1:3000 + Tauri shell)
+# Dev (Next.js dev server on http://127.0.0.1:43110 + Tauri shell)
 npm run tauri dev
 
 # Production build
