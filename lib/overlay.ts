@@ -126,8 +126,11 @@ export function setOverlayClickThrough(enabled: boolean): Promise<OverlayRuntime
     return invoke("set_overlay_click_through", { enabled });
 }
 
-export function publishOverlayContent(content: OverlayContent): Promise<OverlayRuntimeState> {
-    return invoke("publish_overlay_content", { content });
+export function publishOverlayContent(
+    content: OverlayContent,
+    allowAutoShow = true
+): Promise<OverlayRuntimeState> {
+    return invoke("publish_overlay_content", { content, allowAutoShow });
 }
 
 export function getOverlayState(): Promise<OverlayRuntimeState> {
