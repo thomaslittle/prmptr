@@ -108,6 +108,8 @@ where
     T: Sample + SizedSample + Copy + Send + 'static,
     f32: FromSample<T>,
 {
+    let data_running = running.clone();
+    let error_running = running;
     let error_metrics = metrics.clone();
     let label = spec.track.as_str();
 
@@ -115,7 +117,7 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
-                if !running.load(Ordering::Relaxed) {
+                if !data_running.load(Ordering::Relaxed) {
                     return;
                 }
                 metrics.record_native_samples(data.len());
@@ -161,7 +163,8 @@ where
             },
             move |error| {
                 error_metrics.record_capture_error();
-                log::error!("[{label}] capture stream error: {error}");
+                error_running.store(false, Ordering::Relaxed);
+                log::error!("[{label}] capture stream failed and stopped the speech pipeline: {error}");
             },
             None,
         )
@@ -183,13 +186,15 @@ pub fn spawn_capture_thread(
         return platform::spawn_system_capture_thread(running, muted, level, tx, metrics);
     }
 
-    Ok(std::thread::spawn(move || {
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+    let startup_running = running.clone();
+    let thread = std::thread::spawn(move || {
         let label = spec.track.as_str();
         let device = match resolve_device(&spec) {
             Ok(device) => device,
             Err(error) => {
                 metrics.record_capture_error();
-                log::error!("[{label}] {error}");
+                let _ = ready_tx.send(Err(error));
                 return;
             }
         };
@@ -198,7 +203,7 @@ pub fn spawn_capture_thread(
             Ok(config) => config,
             Err(error) => {
                 metrics.record_capture_error();
-                log::error!("[{label}] {error}");
+                let _ = ready_tx.send(Err(error));
                 return;
             }
         };
@@ -211,7 +216,7 @@ pub fn spawn_capture_thread(
             Ok(value) => Arc::new(Mutex::new(value)),
             Err(error) => {
                 metrics.record_resampler_error();
-                log::error!("[{label}] {error}");
+                let _ = ready_tx.send(Err(error));
                 return;
             }
         };
@@ -244,15 +249,16 @@ pub fn spawn_capture_thread(
             Ok(stream) => stream,
             Err(error) => {
                 metrics.record_capture_error();
-                log::error!("[{label}] {error}");
+                let _ = ready_tx.send(Err(error));
                 return;
             }
         };
         if let Err(error) = stream.play() {
             metrics.record_capture_error();
-            log::error!("[{label}] failed to start capture stream: {error}");
+            let _ = ready_tx.send(Err(format!("Failed to start {label} capture stream: {error}")));
             return;
         }
+        let _ = ready_tx.send(Ok(()));
 
         while running.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -274,5 +280,18 @@ pub fn spawn_capture_thread(
             }
         }
         log::info!("[{label}] capture thread stopped");
-    }))
+    });
+
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(())) => Ok(thread),
+        Ok(Err(error)) => {
+            startup_running.store(false, Ordering::Relaxed);
+            let _ = thread.join();
+            Err(error)
+        }
+        Err(error) => {
+            startup_running.store(false, Ordering::Relaxed);
+            Err(format!("Timed out starting {} capture: {error}", spec.track.as_str()))
+        }
+    }
 }
