@@ -23,6 +23,14 @@ export interface MoonshineVoiceModelStatus {
     integrityManifestPresent: boolean;
 }
 
+export interface MoonshineModelCatalogEntry {
+    arch: MoonshineVoiceArch;
+    label: string;
+    qualityTier: string;
+    recommendedForAuto: boolean;
+    status: MoonshineVoiceModelStatus;
+}
+
 export interface MoonshineQualityOption {
     id: MoonshineQualityProfile;
     label: string;
@@ -91,6 +99,10 @@ export function getMoonshineVoiceModelStatus(
     return invoke("get_moonshine_voice_model_status", { arch });
 }
 
+export function listMoonshineVoiceModels(): Promise<MoonshineModelCatalogEntry[]> {
+    return invoke("list_moonshine_voice_models");
+}
+
 export function installMoonshineVoiceModel(
     arch: MoonshineVoiceArch = "medium-streaming"
 ): Promise<MoonshineVoiceModelStatus> {
@@ -101,6 +113,18 @@ export function installMoonshineQualityProfile(
     profile: MoonshineQualityProfile = "auto"
 ): Promise<MoonshineVoiceModelStatus> {
     return invoke("install_moonshine_quality_profile", { profile });
+}
+
+export function deleteMoonshineVoiceModel(
+    arch: MoonshineVoiceArch
+): Promise<MoonshineVoiceModelStatus> {
+    return invoke("delete_moonshine_voice_model", { arch });
+}
+
+export function pruneMoonshineVoiceModels(
+    keep: MoonshineVoiceArch
+): Promise<MoonshineModelCatalogEntry[]> {
+    return invoke("prune_moonshine_voice_models", { keep });
 }
 
 export function startSpeechContextSidecar(): Promise<SpeechContextSidecarStatus> {

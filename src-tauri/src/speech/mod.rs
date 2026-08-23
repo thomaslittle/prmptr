@@ -4,6 +4,8 @@ pub mod context_sidecar;
 pub mod deepgram;
 pub mod diagnostics;
 pub mod engines;
+pub mod moonshine_model_commands;
+pub mod moonshine_models;
 pub mod moonshine_quality;
 pub mod moonshine_stream;
 pub mod moonshine_verify;
