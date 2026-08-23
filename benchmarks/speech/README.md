@@ -8,9 +8,13 @@ This directory is the executable accuracy/evidence surface for speech changes.
 npm run speech:benchmark
 npm run speech:benchmark -- --manifest benchmarks/speech/fixtures/smoke-manifest.json --output speech-result.json
 npm run speech:benchmark -- --max-wer 0.08 --max-speaker-confusion 0.10
+npm run speech:benchmark:compare -- --baseline before.json --candidate after.json
+npm run speech:benchmark:test
 ```
 
-The command prints a human summary and can emit machine-readable JSON suitable for before/after comparisons.
+The evaluator prints a human summary and can emit machine-readable JSON. The comparison command is the regression gate: it compares two retained result JSON files and exits non-zero when accuracy, diarization, duplicate-channel behavior, p95 latency/inference time, or dropped-sample limits regress.
+
+Default comparison tolerances are deliberately tight: +1 percentage point WER/CER, +2 points technical-term/speaker-confusion/duplicate-channel rate, +75 ms p95 latency/inference, and **zero dropped samples**. Qualification runs may override a threshold explicitly, but the override belongs in retained evidence rather than being hidden in code.
 
 ## Manifest contract
 
