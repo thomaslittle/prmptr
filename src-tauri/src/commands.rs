@@ -1230,12 +1230,10 @@ pub fn list_whisper_models(app: tauri::AppHandle) -> Result<Vec<WhisperModelInfo
 
 // ──────────────────────────── Moonshine Commands ────────────────────────────
 
-#[tauri::command]
-pub fn is_moonshine_model_installed(app: tauri::AppHandle) -> Result<bool, String> {
-    Ok(crate::transcription::model_manager::is_moonshine_installed(&app))
-}
-
-#[tauri::command]
+// Legacy Moonshine model helpers. These are no longer registered directly as
+// Tauri commands; `speech::commands::{is_moonshine_model_installed,
+// download_moonshine_model}` are the single registered entry points and fall
+// back to these implementations when `moonshine-voice` is disabled.
 pub async fn download_moonshine_model(
     app: tauri::AppHandle,
 ) -> Result<(), String> {

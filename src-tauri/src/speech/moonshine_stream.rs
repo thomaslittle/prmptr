@@ -650,6 +650,9 @@ mod tests {
         assert_eq!(terms, "Ceph Cluster,Kubernetes");
     }
 
+    // `samples_to_ms` is part of the Moonshine Voice emit path; this test can
+    // only compile when that feature owns it.
+    #[cfg(feature = "moonshine-voice")]
     #[test]
     fn sample_epochs_preserve_global_timeline() {
         assert_eq!(samples_to_ms(16_000), 1_000);

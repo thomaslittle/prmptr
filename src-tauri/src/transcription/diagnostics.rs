@@ -85,7 +85,7 @@ pub async fn get_speech_diagnostic_bundle(
     app: tauri::AppHandle,
     speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
     deepgram: State<'_, Arc<Mutex<DirectDeepgramStreamManager>>>,
-) -> SpeechDiagnosticBundle {
+) -> Result<SpeechDiagnosticBundle, String> {
     let (local_running, local_pipeline) = {
         let speech = speech.lock().await;
         (speech.is_running(), speech.audio_metrics())
@@ -97,7 +97,7 @@ pub async fn get_speech_diagnostic_bundle(
     let auto = moonshine_quality::resolve(MoonshineQualityProfile::Auto);
     let models = crate::speech::moonshine_models::catalog(&app).unwrap_or_default();
     let sidecar = crate::speech::context_sidecar::status().await;
-    build_bundle(
+    Ok(build_bundle(
         local_running,
         local_pipeline,
         deepgram_running,
@@ -106,7 +106,7 @@ pub async fn get_speech_diagnostic_bundle(
         auto,
         models,
         sidecar,
-    )
+    ))
 }
 
 #[cfg(test)]

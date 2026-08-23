@@ -188,6 +188,7 @@ pub fn spawn_capture_thread(
 
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
     let startup_running = running.clone();
+    let startup_track = spec.track;
     let thread = std::thread::spawn(move || {
         let label = spec.track.as_str();
         let device = match resolve_device(&spec) {
@@ -291,7 +292,7 @@ pub fn spawn_capture_thread(
         }
         Err(error) => {
             startup_running.store(false, Ordering::Relaxed);
-            Err(format!("Timed out starting {} capture: {error}", spec.track.as_str()))
+            Err(format!("Timed out starting {} capture: {error}", startup_track.as_str()))
         }
     }
 }
