@@ -38,12 +38,22 @@ export interface OverlayContent {
     appearance: OverlayAppearance;
 }
 
+export interface OverlayCapabilities {
+    platform: string;
+    transparencySupported: boolean;
+    alwaysOnTopSupported: boolean;
+    clickThroughSupported: boolean;
+    captureProtectionSupported: boolean;
+    globalPositionPersistenceSupported: boolean;
+}
+
 export interface OverlayRuntimeState {
     enabled: boolean;
     windowExists: boolean;
     visible: boolean;
     clickThrough: boolean;
     captureProtected: boolean;
+    capabilities: OverlayCapabilities;
     config: OverlayWindowConfig;
     content: OverlayContent;
 }
