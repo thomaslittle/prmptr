@@ -4,5 +4,6 @@ pub mod deepgram;
 pub mod diagnostics;
 pub mod engines;
 pub mod moonshine_stream;
+pub mod moonshine_verify;
 pub mod moonshine_voice;
 pub mod stream;

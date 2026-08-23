@@ -209,6 +209,23 @@ impl EmitState {
 }
 
 #[cfg(feature = "moonshine-voice")]
+fn emit_worker_error(app: &tauri::AppHandle, running: &AtomicBool, message: String) {
+    // Compatibility status bucket remains local-whisper until the dashboard's
+    // state variable is renamed. Canonical TranscriptLine.engine still records
+    // `moonshine-voice` exactly.
+    let _ = app.emit(
+        "local-transcription-status",
+        serde_json::json!({
+            "mode": "local-whisper",
+            "engine": "moonshine-voice",
+            "running": false,
+            "error": message
+        }),
+    );
+    running.store(false, Ordering::Relaxed);
+}
+
+#[cfg(feature = "moonshine-voice")]
 pub fn spawn_worker(
     app: tauri::AppHandle,
     running: Arc<AtomicBool>,
@@ -246,6 +263,9 @@ pub fn spawn_worker(
             running.store(false, Ordering::Relaxed);
             return;
         }
+
+        let native_diarization = tracks.contains(&AudioTrackId::System)
+            && crate::transcription::speaker::get_speaker_diarization_enabled();
         let diarization_dir = match moonshine_voice::diarization_dir(&app, config.arch) {
             Ok(path) => path,
             Err(error) => {
@@ -258,7 +278,7 @@ pub fn spawn_worker(
         let context = clean_context(&config.context);
         let options = TranscriberOptions::new()
             .with_speculative_decoding(true)
-            .with_identify_speakers(tracks.contains(&AudioTrackId::System))
+            .with_identify_speakers(native_diarization)
             .with_diarization_model_dir(&diarization_dir)
             .with_keyterm_boost(config.keyterm_boost.clamp(0.0, 4.0))
             .with_keyterms(&keyterms)
@@ -289,6 +309,12 @@ pub fn spawn_worker(
             }
         }
         let _ = ready_tx.send(Ok(()));
+        log::info!(
+            "Moonshine Voice worker ready: arch={} tracks={} diarization={}",
+            config.arch.id(),
+            tracks.len(),
+            native_diarization
+        );
 
         let mut emit = EmitState::new();
         let mut expected_sample: HashMap<AudioTrackId, u64> = tracks.iter().map(|track| (*track, 0)).collect();
@@ -316,21 +342,13 @@ pub fn spawn_worker(
             while gap > 0 {
                 let count = (gap as usize).min(zero_block.len());
                 if let Err(error) = stream.add_audio(&zero_block[..count], SPEECH_SAMPLE_RATE) {
-                    let _ = app.emit("local-transcription-status", serde_json::json!({
-                        "mode": "moonshine-voice", "running": false,
-                        "error": format!("Moonshine stream gap fill failed: {error}")
-                    }));
-                    running.store(false, Ordering::Relaxed);
+                    emit_worker_error(&app, &running, format!("Moonshine stream gap fill failed: {error}"));
                     return;
                 }
                 gap -= count as u64;
             }
             if let Err(error) = stream.add_audio(&chunk.samples, SPEECH_SAMPLE_RATE) {
-                let _ = app.emit("local-transcription-status", serde_json::json!({
-                    "mode": "moonshine-voice", "running": false,
-                    "error": format!("Moonshine stream add_audio failed: {error}")
-                }));
-                running.store(false, Ordering::Relaxed);
+                emit_worker_error(&app, &running, format!("Moonshine stream add_audio failed: {error}"));
                 return;
             }
             *expected = chunk.end_sample();
@@ -345,11 +363,7 @@ pub fn spawn_worker(
                         &app, &transcript_buffer, chunk.track, config.arch, transcript,
                     ),
                     Err(error) => {
-                        let _ = app.emit("local-transcription-status", serde_json::json!({
-                            "mode": "moonshine-voice", "running": false,
-                            "error": format!("Moonshine stream poll failed: {error}")
-                        }));
-                        running.store(false, Ordering::Relaxed);
+                        emit_worker_error(&app, &running, format!("Moonshine stream poll failed: {error}"));
                         return;
                     }
                 }
