@@ -58,4 +58,10 @@ crc32c = { version = "0.6", optional = true }
 moonshine-rs = { git = "https://github.com/ghchinoy/moonshine-rs", rev = "887c89f641d9bf8469099aa1e1f21c65ed72d24d", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Tauri gates transparent native windows on macOS behind this feature. PRMPTR's
+# overlay is intentionally transparent; direct-distribution builds therefore
+# enable it only on macOS instead of broadening the feature to other targets.
+# Note: Tauri documents this as using private macOS APIs, so App Store packaging
+# must be revisited separately if PRMPTR ever targets the Mac App Store.
+tauri = { version = "2", features = ["macos-private-api"] }
 screencapturekit = { version = "8.0.1", features = ["macos_13_0"] }
