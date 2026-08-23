@@ -18,7 +18,12 @@ tauri-build = { version = "2", features = [] }
 # Requires: CUDA toolkit, CMake, MSVC/nvcc.
 # Enable with: cargo build --features cuda
 [features]
+default = []
 cuda = ["whisper-rs/cuda"]
+# Moonshine Voice is intentionally opt-in until its native packaging path has
+# retained Windows/macOS/Linux build evidence. The wrapper is pinned to one
+# exact Git revision so API/ABI changes cannot silently enter PRMPTR.
+moonshine-voice = ["dep:moonshine-rs", "dep:crc32c"]
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -49,6 +54,8 @@ libc = "0.2"
 open = "5"
 url = "2"
 base64 = "0.22"
+crc32c = { version = "0.6", optional = true }
+moonshine-rs = { git = "https://github.com/ghchinoy/moonshine-rs", rev = "887c89f641d9bf8469099aa1e1f21c65ed72d24d", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "8.0.1", features = ["macos_13_0"] }
