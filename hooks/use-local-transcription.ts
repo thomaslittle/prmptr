@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { onLocalTranscription } from "@/lib/tauri";
 import {
     legacyLocalResultToTranscriptLine,
+    resolveTranscriptEngine,
     transcriptLinesToFeedItems,
 } from "@/lib/transcript";
 import { useTranscriptStore } from "@/lib/stores/transcript-store";
@@ -21,8 +22,10 @@ export function useLocalTranscription() {
             const state = useTranscriptStore.getState();
             const previous = state.lines.find((line) => line.id === result.id);
             const settings = useSettingsStore.getState().settings;
-            const engine = settings.localSttEngine ?? "whisper";
-            const model = engine === "moonshine" ? "moonshine-sherpa-base" : "selected-whisper";
+            const { engine, model } = resolveTranscriptEngine({
+                transcriptionMode: settings.transcriptionMode,
+                localSttEngine: settings.localSttEngine,
+            });
 
             const line = legacyLocalResultToTranscriptLine(
                 result,
@@ -36,6 +39,8 @@ export function useLocalTranscription() {
                 revision: line.revision,
                 complete: line.isComplete,
                 track: line.trackId,
+                engine: line.engine,
+                model: line.model,
                 speakers: line.speakerSpans.map((span) => span.speakerKey),
                 timestamp: line.updatedAt,
                 text: line.text,

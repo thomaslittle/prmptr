@@ -6,6 +6,8 @@ import type { DBSession, DBTranscriptLine } from "@/lib/db";
 import type { SessionConfig, SessionSummary, ResponseEntry, FeedItem } from "@/lib/types";
 import {
     feedItemToTranscriptLine,
+    transcriptLineToFeedItems,
+    transcriptLinesRepresentedByFeed,
     type TranscriptLine,
 } from "@/lib/transcript";
 import { useTranscriptStore } from "@/lib/stores/transcript-store";
@@ -244,19 +246,19 @@ export function useSessionHistory() {
                     }))
                 );
 
-                // The live local path now has a canonical store. Persist those
-                // stable IDs/revisions directly, then derive only non-local audio
-                // (screenpipe/deepgram/legacy) from display items as a fallback.
-                const liveCanonical = useTranscriptStore
+                const completeLiveLines = useTranscriptStore
                     .getState()
                     .lines.filter((line) => line.isComplete);
+                const liveCanonical = transcriptLinesRepresentedByFeed(completeLiveLines, items);
+                const liveProjectedIds = new Set(
+                    liveCanonical.flatMap(transcriptLineToFeedItems).map((item) => item.id)
+                );
                 const fallbackAudio = items
                     .filter(
                         (item) =>
                             item.type === "audio" &&
                             item.isFinal !== false &&
-                            !item.source.startsWith("whisper /") &&
-                            !item.source.startsWith("moonshine /")
+                            !liveProjectedIds.has(item.id)
                     )
                     .map(feedItemToTranscriptLine);
 

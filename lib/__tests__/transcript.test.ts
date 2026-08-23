@@ -3,7 +3,9 @@ import {
     feedItemToTranscriptLine,
     legacyLocalResultToTranscriptLine,
     reduceTranscriptLines,
+    resolveTranscriptEngine,
     transcriptLineToFeedItems,
+    transcriptLinesRepresentedByFeed,
     type TranscriptLine,
 } from "../transcript";
 
@@ -53,6 +55,26 @@ describe("canonical transcript reducer", () => {
         const current = line({ revision: 2, text: "one", updatedAt: "2026-08-22T20:00:02.000Z" });
         const correction = line({ revision: 2, text: "two", updatedAt: "2026-08-22T20:00:03.000Z" });
         expect(reduceTranscriptLines([current], correction)[0].text).toBe("two");
+    });
+});
+
+describe("engine provenance", () => {
+    it("labels direct Deepgram events as Deepgram instead of the local engine", () => {
+        expect(
+            resolveTranscriptEngine({
+                transcriptionMode: "direct-deepgram",
+                localSttEngine: "moonshine",
+            })
+        ).toEqual({ engine: "deepgram", model: "nova-2" });
+    });
+
+    it("keeps Moonshine and Whisper provenance distinct in local mode", () => {
+        expect(
+            resolveTranscriptEngine({ transcriptionMode: "local-whisper", localSttEngine: "moonshine" })
+        ).toEqual({ engine: "moonshine", model: "moonshine-sherpa-base" });
+        expect(
+            resolveTranscriptEngine({ transcriptionMode: "local-whisper", localSttEngine: "whisper" })
+        ).toEqual({ engine: "whisper", model: "selected-whisper" });
     });
 });
 
@@ -136,6 +158,13 @@ describe("speaker-aware projection", () => {
             "gap",
             "beta",
         ]);
+    });
+
+    it("selects canonical lines only when their projected feed rows are present", () => {
+        const live = line({ id: "live", isComplete: true });
+        const archived = line({ id: "archived", text: "old", isComplete: true });
+        const liveItem = transcriptLineToFeedItems(live)[0];
+        expect(transcriptLinesRepresentedByFeed([live, archived], [liveItem])).toEqual([live]);
     });
 });
 

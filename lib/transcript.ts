@@ -49,6 +49,28 @@ export interface LegacyLocalTranscriptionResult {
     speaker_label: string | null;
 }
 
+export interface TranscriptEngineSelection {
+    engine: "whisper" | "moonshine" | "deepgram" | "screenpipe";
+    model: string;
+}
+
+export function resolveTranscriptEngine(settings: {
+    transcriptionMode?: "screenpipe" | "local-whisper" | "direct-deepgram";
+    localSttEngine?: "whisper" | "moonshine";
+}): TranscriptEngineSelection {
+    const mode = settings.transcriptionMode ?? "local-whisper";
+    if (mode === "direct-deepgram") {
+        return { engine: "deepgram", model: "nova-2" };
+    }
+    if (mode === "screenpipe") {
+        return { engine: "screenpipe", model: "managed" };
+    }
+    if ((settings.localSttEngine ?? "whisper") === "moonshine") {
+        return { engine: "moonshine", model: "moonshine-sherpa-base" };
+    }
+    return { engine: "whisper", model: "selected-whisper" };
+}
+
 function cleanSpeakerLabel(value?: string): string | undefined {
     const cleaned = value
         ?.replace(/[\r\n\[\]]+/g, " ")
@@ -254,4 +276,19 @@ export function transcriptLinesToFeedItems(lines: TranscriptLine[]): FeedItem[] 
     return [...lines]
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
         .flatMap(transcriptLineToFeedItems);
+}
+
+/**
+ * Select only canonical lines that are actually represented in a supplied UI
+ * feed snapshot. This prevents live canonical state from leaking into a loaded
+ * historical session when that archived feed is saved again.
+ */
+export function transcriptLinesRepresentedByFeed(
+    lines: TranscriptLine[],
+    items: FeedItem[]
+): TranscriptLine[] {
+    const itemIds = new Set(items.map((item) => item.id));
+    return lines.filter((line) =>
+        transcriptLineToFeedItems(line).some((item) => itemIds.has(item.id))
+    );
 }
