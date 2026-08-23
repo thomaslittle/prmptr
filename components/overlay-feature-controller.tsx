@@ -11,9 +11,12 @@ import {
     setOverlayClickThrough,
     setOverlayEnabled,
     toggleOverlayVisibility,
+    type OverlayContent,
 } from "@/lib/overlay";
 import { overlayWindowConfig, useOverlayStore } from "@/lib/stores/overlay-store";
 import { useSessionStore } from "@/lib/stores/session-store";
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default function OverlayFeatureController() {
     const preferences = useOverlayStore((state) => state.preferences);
@@ -28,9 +31,37 @@ export default function OverlayFeatureController() {
     const sessionId = useSessionStore((state) => state.currentSessionId);
     const initialized = useRef(false);
     const lastPayloadHash = useRef("");
+    const previewGeneration = useRef(0);
+    const previewActive = useRef(false);
     const [expanded, setExpanded] = useState(false);
+    const [isPreviewing, setIsPreviewing] = useState(false);
     const desktopRuntime = isTauri();
     const nativeConfig = useMemo(() => overlayWindowConfig(preferences), [preferences]);
+
+    const publishLiveSnapshot = useCallback(async () => {
+        const overlayPreferences = useOverlayStore.getState().preferences;
+        if (!overlayPreferences.enabled || previewActive.current) return;
+        const session = useSessionStore.getState();
+        const content = normalizeOverlayProjection({
+            responses: session.responses,
+            currentResponse: session.currentResponse,
+            isStreaming: session.isStreaming,
+            sessionId: session.currentSessionId,
+            maxResponses: overlayPreferences.maxResponses,
+            opacity: overlayPreferences.opacity,
+            fontScale: overlayPreferences.fontScale,
+        });
+        const hash = JSON.stringify(content);
+        if (hash === lastPayloadHash.current) return;
+        lastPayloadHash.current = hash;
+        try {
+            applyRuntime(await publishOverlayContent(content));
+            setLastError(null);
+        } catch (error) {
+            lastPayloadHash.current = "";
+            setLastError(error instanceof Error ? error.message : String(error));
+        }
+    }, [applyRuntime, setLastError]);
 
     useEffect(() => {
         if (!desktopRuntime) return;
@@ -53,6 +84,7 @@ export default function OverlayFeatureController() {
         })();
         return () => {
             disposed = true;
+            previewGeneration.current += 1;
             unlisten?.();
         };
         // Initial ownership synchronization intentionally runs once.
@@ -70,29 +102,20 @@ export default function OverlayFeatureController() {
     }, [desktopRuntime, nativeConfig, preferences.enabled, applyRuntime, setLastError]);
 
     useEffect(() => {
-        if (!desktopRuntime || !preferences.enabled) return;
-        const content = normalizeOverlayProjection({
-            responses,
-            currentResponse,
-            isStreaming,
-            sessionId,
-            maxResponses: preferences.maxResponses,
-            opacity: preferences.opacity,
-            fontScale: preferences.fontScale,
-        });
-        const hash = JSON.stringify(content);
-        if (hash === lastPayloadHash.current) return;
-        lastPayloadHash.current = hash;
-        publishOverlayContent(content)
-            .then(applyRuntime)
-            .catch((error) => {
-                lastPayloadHash.current = "";
-                setLastError(error instanceof Error ? error.message : String(error));
-            });
-    }, [desktopRuntime, preferences.enabled, preferences.maxResponses, preferences.opacity, preferences.fontScale, responses, currentResponse, isStreaming, sessionId, applyRuntime, setLastError]);
+        if (!desktopRuntime || !preferences.enabled || previewActive.current) return;
+        void publishLiveSnapshot();
+    }, [desktopRuntime, preferences.enabled, preferences.maxResponses, preferences.opacity, preferences.fontScale, responses, currentResponse, isStreaming, sessionId, publishLiveSnapshot]);
+
+    useEffect(() => {
+        if (preferences.enabled) return;
+        previewGeneration.current += 1;
+        previewActive.current = false;
+        setIsPreviewing(false);
+    }, [preferences.enabled]);
 
     const toggleFeature = useCallback(async () => {
         try {
+            if (preferences.enabled) previewGeneration.current += 1;
             const state = await setOverlayEnabled(!preferences.enabled, nativeConfig);
             applyRuntime(state);
             setExpanded(!preferences.enabled);
@@ -132,6 +155,67 @@ export default function OverlayFeatureController() {
         }
     }, [preferences.enabled, applyRuntime, setLastError]);
 
+    const runPreview = useCallback(async () => {
+        if (!useOverlayStore.getState().preferences.enabled || previewActive.current) return;
+        const generation = ++previewGeneration.current;
+        previewActive.current = true;
+        setIsPreviewing(true);
+        setLastError(null);
+
+        const currentPreferences = useOverlayStore.getState().preferences;
+        const appearance = {
+            opacity: currentPreferences.opacity,
+            fontScale: currentPreferences.fontScale,
+        };
+        const publishPreview = async (content: OverlayContent) => {
+            if (generation !== previewGeneration.current || !useOverlayStore.getState().preferences.enabled) return false;
+            applyRuntime(await publishOverlayContent(content));
+            return true;
+        };
+
+        try {
+            if (!await publishPreview({
+                responses: [],
+                currentResponse: "",
+                isStreaming: true,
+                sessionId: "overlay-preview",
+                appearance,
+            })) return;
+            await delay(350);
+            if (!await publishPreview({
+                responses: [],
+                currentResponse: "PRMPTR is streaming this overlay preview through the same native response channel used during a real session…",
+                isStreaming: true,
+                sessionId: "overlay-preview",
+                appearance,
+            })) return;
+            await delay(750);
+            if (!await publishPreview({
+                responses: [{
+                    id: `overlay-preview-${Date.now()}`,
+                    content: "**Overlay preview complete.** Drag or resize this window, try click-through, then use **Center / recover window** if needed.",
+                    timestamp: new Date().toISOString(),
+                    model: "PRMPTR self-test",
+                    kind: "analysis",
+                }],
+                currentResponse: "",
+                isStreaming: false,
+                sessionId: "overlay-preview",
+                appearance,
+            })) return;
+            await delay(1800);
+        } catch (error) {
+            setLastError(`Overlay preview failed: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            if (generation === previewGeneration.current) {
+                previewActive.current = false;
+                setIsPreviewing(false);
+                lastPayloadHash.current = "";
+                await publishLiveSnapshot();
+            }
+        }
+    }, [applyRuntime, publishLiveSnapshot, setLastError]);
+
     useEffect(() => {
         if (!desktopRuntime || !preferences.enabled) return;
         let disposed = false;
@@ -169,6 +253,9 @@ export default function OverlayFeatureController() {
 
     if (!desktopRuntime) return null;
     const visible = runtime?.visible ?? false;
+    const capabilities = runtime?.capabilities;
+    const captureSupported = capabilities?.captureProtectionSupported ?? true;
+    const platform = capabilities?.platform ?? "desktop";
 
     return (
         <div className="fixed bottom-3 right-3 z-[90] flex max-w-[360px] flex-col items-end gap-1">
@@ -176,6 +263,7 @@ export default function OverlayFeatureController() {
                 <div className="w-[320px] rounded-lg border border-border/80 bg-background/95 p-3 shadow-xl backdrop-blur-md">
                     <div className="mb-3 flex items-center justify-between">
                         <span className="text-[11px] font-semibold text-foreground/80">Overlay</span>
+                        <span className="text-[9px] text-muted-foreground/60">{platform} · {visible ? "visible" : "hidden"}</span>
                         <button type="button" className="text-[10px] text-muted-foreground hover:text-foreground" onClick={() => setExpanded(false)}>Done</button>
                     </div>
                     <label className="mb-2 block text-[9px] uppercase tracking-wider text-muted-foreground">
@@ -192,10 +280,22 @@ export default function OverlayFeatureController() {
                     </label>
                     <div className="grid grid-cols-2 gap-1.5 text-[10px]">
                         <button type="button" onClick={() => updatePreferences({ autoShowOnResponse: !preferences.autoShowOnResponse })} className={`rounded border px-2 py-1.5 ${preferences.autoShowOnResponse ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>Auto-show {preferences.autoShowOnResponse ? "on" : "off"}</button>
-                        <button type="button" onClick={() => updatePreferences({ captureProtected: !preferences.captureProtected })} className={`rounded border px-2 py-1.5 ${preferences.captureProtected ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>Capture shield {preferences.captureProtected ? "on" : "off"}</button>
-                        <button type="button" onClick={recoverPosition} className="col-span-2 rounded border border-border px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">Center / recover window</button>
+                        <button type="button" disabled={!captureSupported} onClick={() => updatePreferences({ captureProtected: !preferences.captureProtected })} className={`rounded border px-2 py-1.5 disabled:cursor-not-allowed disabled:opacity-50 ${captureSupported && preferences.captureProtected ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`} title={captureSupported ? "Prevent PRMPTR overlay content from appearing in supported OS screen captures" : `Capture protection is not supported by Tauri on ${platform}`}>
+                            {captureSupported ? `Capture shield ${preferences.captureProtected ? "on" : "off"}` : "Shield unsupported"}
+                        </button>
+                        <button type="button" onClick={recoverPosition} className="rounded border border-border px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">Center / recover</button>
+                        <button type="button" disabled={isPreviewing} onClick={() => void runPreview()} className="rounded border border-border px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-wait disabled:opacity-50">{isPreviewing ? "Testing…" : "Test overlay"}</button>
                     </div>
+                    {!captureSupported && (
+                        <div className="mt-2 rounded border border-amber-500/20 bg-amber-500/5 p-2 text-[9px] leading-relaxed text-amber-300/80">
+                            Capture shield is unavailable on {platform}. The overlay may appear in screenshot/OCR context on this platform.
+                        </div>
+                    )}
+                    {capabilities && !capabilities.globalPositionPersistenceSupported && (
+                        <div className="mt-2 text-[9px] leading-relaxed text-muted-foreground/60">Global window position is not persisted on this compositor; Center / recover remains available.</div>
+                    )}
                     <div className="mt-2 text-[9px] leading-relaxed text-muted-foreground/60">{preferences.toggleShortcut} show/hide · {preferences.clickThroughShortcut} click-through</div>
+                    <div className="mt-1 text-[9px] text-muted-foreground/45">window {runtime?.windowExists ? "created" : "not created"} · shield {runtime?.captureProtected ? "effective" : "inactive"} · clicks {runtime?.clickThrough ? "pass through" : "interactive"}</div>
                     {lastError && <div className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-[9px] text-destructive">{lastError}</div>}
                 </div>
             )}
