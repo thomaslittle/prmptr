@@ -1,15 +1,18 @@
 "use client";
 
 import { useEffect, useMemo } from "react";
-import { onLocalTranscription } from "@/lib/tauri";
 import {
-    legacyLocalResultToTranscriptLine,
-    resolveTranscriptEngine,
-    transcriptLinesToFeedItems,
-} from "@/lib/transcript";
+    nativeTranscriptLineToTranscriptLine,
+    onSpeechTranscriptLine,
+} from "@/lib/speech-runtime";
+import { transcriptLinesToFeedItems } from "@/lib/transcript";
 import { useTranscriptStore } from "@/lib/stores/transcript-store";
-import { useSettingsStore } from "@/lib/stores/settings-store";
 
+/**
+ * Compatibility hook name retained while the dashboard moves to neutral speech
+ * naming. Its source of truth is the canonical native `speech-transcript-line`
+ * event for every backend, not the old Whisper-shaped event.
+ */
 export function useLocalTranscription() {
     const lines = useTranscriptStore((state) => state.lines);
     const upsertLine = useTranscriptStore((state) => state.upsertLine);
@@ -17,24 +20,11 @@ export function useLocalTranscription() {
 
     useEffect(() => {
         let unlisten: (() => void) | null = null;
+        let disposed = false;
 
-        onLocalTranscription((result) => {
-            const state = useTranscriptStore.getState();
-            const previous = state.lines.find((line) => line.id === result.id);
-            const settings = useSettingsStore.getState().settings;
-            const { engine, model } = resolveTranscriptEngine({
-                transcriptionMode: settings.transcriptionMode,
-                localSttEngine: settings.localSttEngine,
-            });
-
-            const line = legacyLocalResultToTranscriptLine(
-                result,
-                previous,
-                engine,
-                model
-            );
-
-            console.log("[canonical-local-transcription]", {
+        onSpeechTranscriptLine((nativeLine) => {
+            const line = nativeTranscriptLineToTranscriptLine(nativeLine);
+            console.log("[canonical-speech-transcript]", {
                 id: line.id,
                 revision: line.revision,
                 complete: line.isComplete,
@@ -42,17 +32,24 @@ export function useLocalTranscription() {
                 engine: line.engine,
                 model: line.model,
                 speakers: line.speakerSpans.map((span) => span.speakerKey),
-                timestamp: line.updatedAt,
+                latencyMs: line.latencyMs,
                 text: line.text,
             });
-
             upsertLine(line);
-        }).then((fn) => (unlisten = fn));
+        }).then((fn) => {
+            if (disposed) {
+                fn();
+            } else {
+                unlisten = fn;
+            }
+        });
 
-        return () => unlisten?.();
+        return () => {
+            disposed = true;
+            unlisten?.();
+        };
     }, [upsertLine]);
 
     const items = useMemo(() => transcriptLinesToFeedItems(lines), [lines]);
-
     return { items, lines, clear };
 }
