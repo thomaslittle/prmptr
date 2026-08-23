@@ -1,4 +1,5 @@
 import type { SpeechCapabilities } from "@/lib/speech-capabilities";
+import { analyzeCrossChannelEcho, type CrossChannelEchoDiagnostics } from "@/lib/speech-echo";
 import type {
     MoonshineModelCatalogEntry,
     MoonshineQualityResolution,
@@ -6,6 +7,7 @@ import type {
     MoonshineVoiceSupport,
     SpeechContextSidecarStatus,
 } from "@/lib/speech-tauri";
+import { useTranscriptStore } from "@/lib/stores/transcript-store";
 
 export interface SpeechDetectionDiagnostics {
     diarizationEnabled: boolean;
@@ -48,9 +50,12 @@ export interface SpeechDiagnosticBundle {
     moonshineAutoResolution: MoonshineQualityResolution;
     moonshineModels: MoonshineModelCatalogEntry[];
     contextSidecar: SpeechContextSidecarStatus;
+    crossChannelEcho: CrossChannelEchoDiagnostics;
     rawAudioRetained: boolean;
     privacyNote: string;
 }
+
+type NativeSpeechDiagnosticBundle = Omit<SpeechDiagnosticBundle, "crossChannelEcho">;
 
 function isDesktopRuntime(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -83,5 +88,11 @@ export async function resetSpeechDetectionDiagnostics(): Promise<SpeechDetection
 export async function getSpeechDiagnosticBundle(): Promise<SpeechDiagnosticBundle | null> {
     if (!isDesktopRuntime()) return null;
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<SpeechDiagnosticBundle>("get_speech_diagnostic_bundle");
+    const native = await invoke<NativeSpeechDiagnosticBundle>("get_speech_diagnostic_bundle");
+    return {
+        ...native,
+        // Evidence only: this detects likely dual-capture leakage in the
+        // canonical transcript and never suppresses or rewrites lines.
+        crossChannelEcho: analyzeCrossChannelEcho(useTranscriptStore.getState().lines),
+    };
 }
