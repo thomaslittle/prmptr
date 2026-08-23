@@ -42,11 +42,11 @@ function normalizeShortcutId(value: string): string {
         }
 
         if (p.startsWith("key") && p.length === 4) {
-            key = p.slice(3); // keyx -> x
+            key = p.slice(3);
             continue;
         }
         if (p.startsWith("digit") && p.length === 6) {
-            key = p.slice(5); // digit2 -> 2
+            key = p.slice(5);
             continue;
         }
 
@@ -66,43 +66,50 @@ export function useShortcutManager(handlers: ShortcutHandlers) {
 
     const shortcuts = settings.shortcuts;
 
-    // Tauri mode: register OS-level global shortcuts (work when app is not focused)
+    // Register only the shortcuts owned by this hook. Never call unregisterAll:
+    // overlay and future optional subsystems own independent global shortcuts.
     useEffect(() => {
         if (!isTauri()) return;
 
         let cancelled = false;
+        const owned = new Set<string>();
 
         (async () => {
             try {
-                const { unregisterAll, register } = await import(
+                const { register, unregister } = await import(
                     "@tauri-apps/plugin-global-shortcut"
                 );
-
-                if (cancelled) return;
-
-                await unregisterAll();
 
                 const tauriShortcuts: string[] = [];
                 const shortcutToAction: Record<string, ShortcutAction> = {};
 
                 for (const [action, binding] of Object.entries(shortcuts)) {
-                    if (cancelled) return;
                     const tauriFormat = toTauriGlobalShortcut(binding.keys);
                     tauriShortcuts.push(tauriFormat);
                     shortcutToAction[normalizeShortcutId(tauriFormat)] = action as ShortcutAction;
                 }
 
-                if (tauriShortcuts.length > 0) {
-                    await register(tauriShortcuts, (event) => {
-                        const state = String(event.state).toLowerCase();
-                        if (state !== "pressed") return;
-                        const action = shortcutToAction[normalizeShortcutId(event.shortcut)];
-                        if (action) {
-                            const handlerKey = ACTION_TO_HANDLER[action];
-                            handlersRef.current[handlerKey]?.();
-                        }
-                    });
+                for (const shortcut of tauriShortcuts) {
+                    if (cancelled) return;
+                    // Remove only an earlier registration of this exact app-owned binding.
+                    // Failure simply means it was not registered yet.
+                    try {
+                        await unregister(shortcut);
+                    } catch {
+                        // no-op
+                    }
                 }
+
+                if (cancelled || tauriShortcuts.length === 0) return;
+                await register(tauriShortcuts, (event) => {
+                    const state = String(event.state).toLowerCase();
+                    if (state !== "pressed") return;
+                    const action = shortcutToAction[normalizeShortcutId(event.shortcut)];
+                    if (!action) return;
+                    const handlerKey = ACTION_TO_HANDLER[action];
+                    handlersRef.current[handlerKey]?.();
+                });
+                tauriShortcuts.forEach((shortcut) => owned.add(shortcut));
             } catch (err) {
                 console.warn("Global shortcut registration failed:", err);
             }
@@ -110,26 +117,32 @@ export function useShortcutManager(handlers: ShortcutHandlers) {
 
         return () => {
             cancelled = true;
-            (async () => {
+            const cleanup = [...owned];
+            owned.clear();
+            void (async () => {
                 try {
-                    const { unregisterAll } = await import(
+                    const { unregister } = await import(
                         "@tauri-apps/plugin-global-shortcut"
                     );
-                    await unregisterAll();
+                    for (const shortcut of cleanup) {
+                        try {
+                            await unregister(shortcut);
+                        } catch {
+                            // The OS/plugin may already have removed it.
+                        }
+                    }
                 } catch {
-                    // ignore
+                    // ignore teardown errors
                 }
             })();
         };
     }, [shortcuts]);
 
-    // Browser mode: keydown listener for in-app shortcuts
+    // Browser mode: keydown listener for in-app shortcuts.
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             const tag = (e.target as HTMLElement)?.tagName;
             if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-            // Check if target has data-shortcut-recorder attribute (recording in progress)
             if ((e.target as HTMLElement)?.closest("[data-shortcut-recorder]")) return;
 
             for (const [action, binding] of Object.entries(shortcuts)) {
