@@ -2,6 +2,7 @@ import type { TranscriptLine } from "@/lib/transcript";
 
 export type SpeechEngineId = "whisper" | "moonshine-sherpa" | "moonshine-voice";
 export type MoonshineVoiceArch = "tiny-streaming" | "small-streaming" | "medium-streaming";
+export type MoonshineQualityProfile = "auto" | "maximum" | "balanced" | "low-cpu";
 
 export interface MoonshineVoiceSupport {
     compiled: boolean;
@@ -20,6 +21,20 @@ export interface MoonshineVoiceModelStatus {
     modelFiles: string[];
     diarizationFiles: string[];
     integrityManifestPresent: boolean;
+}
+
+export interface MoonshineQualityOption {
+    id: MoonshineQualityProfile;
+    label: string;
+    description: string;
+    arch?: MoonshineVoiceArch | null;
+}
+
+export interface MoonshineQualityResolution {
+    profile: MoonshineQualityProfile;
+    arch: MoonshineVoiceArch;
+    logicalCpus: number;
+    reason: string;
 }
 
 export interface SpeechStartConfig {
@@ -52,6 +67,16 @@ export function getMoonshineVoiceSupport(): Promise<MoonshineVoiceSupport> {
     return invoke("get_moonshine_voice_support");
 }
 
+export function getMoonshineQualityProfiles(): Promise<MoonshineQualityOption[]> {
+    return invoke("get_moonshine_quality_profiles");
+}
+
+export function resolveMoonshineQualityProfile(
+    profile: MoonshineQualityProfile = "auto"
+): Promise<MoonshineQualityResolution> {
+    return invoke("resolve_moonshine_quality_profile", { profile });
+}
+
 export function getMoonshineVoiceModelStatus(
     arch: MoonshineVoiceArch = "medium-streaming"
 ): Promise<MoonshineVoiceModelStatus> {
@@ -62,6 +87,12 @@ export function installMoonshineVoiceModel(
     arch: MoonshineVoiceArch = "medium-streaming"
 ): Promise<MoonshineVoiceModelStatus> {
     return invoke("install_moonshine_voice_model", { arch });
+}
+
+export function installMoonshineQualityProfile(
+    profile: MoonshineQualityProfile = "auto"
+): Promise<MoonshineVoiceModelStatus> {
+    return invoke("install_moonshine_quality_profile", { profile });
 }
 
 export function startSpeechTranscription(config: SpeechStartConfig): Promise<void> {

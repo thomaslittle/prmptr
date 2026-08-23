@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { MoonshineVoiceArch } from "@/lib/speech-tauri";
+import type { MoonshineQualityProfile, MoonshineVoiceArch } from "@/lib/speech-tauri";
 
 export interface SpeechPreferences {
+    moonshineQuality: MoonshineQualityProfile;
     moonshineArch: MoonshineVoiceArch;
     contextBiasEnabled: boolean;
     contextMaxTerms: number;
@@ -11,6 +12,7 @@ export interface SpeechPreferences {
 }
 
 const DEFAULTS: SpeechPreferences = {
+    moonshineQuality: "auto",
     moonshineArch: "medium-streaming",
     contextBiasEnabled: true,
     contextMaxTerms: 200,
@@ -40,8 +42,21 @@ export const useSpeechStore = create<SpeechPreferenceState>()(
             reset: () => set({ preferences: DEFAULTS }),
         }),
         {
-            name: "prmptr-speech-preferences.v1",
+            name: "prmptr-speech-preferences.v2",
             storage: createJSONStorage(() => localStorage),
+            migrate: (persisted) => {
+                const state = persisted as Partial<SpeechPreferenceState> | undefined;
+                const previous = state?.preferences ?? ({} as Partial<SpeechPreferences>);
+                return {
+                    ...state,
+                    preferences: {
+                        ...DEFAULTS,
+                        ...previous,
+                        moonshineQuality: previous.moonshineQuality ?? "auto",
+                    },
+                } as SpeechPreferenceState;
+            },
+            version: 2,
         }
     )
 );

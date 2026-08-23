@@ -4,6 +4,9 @@ use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
 
+use crate::speech::moonshine_quality::{
+    self, MoonshineQualityOption, MoonshineQualityProfile, MoonshineQualityResolution,
+};
 use crate::speech::moonshine_voice::{
     self, MoonshineVoiceArch, MoonshineVoiceModelStatus, MoonshineVoiceSupport,
 };
@@ -93,6 +96,18 @@ pub fn get_moonshine_voice_support() -> MoonshineVoiceSupport {
 }
 
 #[tauri::command]
+pub fn get_moonshine_quality_profiles() -> Vec<MoonshineQualityOption> {
+    moonshine_quality::options()
+}
+
+#[tauri::command]
+pub fn resolve_moonshine_quality_profile(
+    profile: MoonshineQualityProfile,
+) -> MoonshineQualityResolution {
+    moonshine_quality::resolve(profile)
+}
+
+#[tauri::command]
 pub fn get_moonshine_voice_model_status(
     app: tauri::AppHandle,
     arch: MoonshineVoiceArch,
@@ -117,9 +132,19 @@ pub async fn install_moonshine_voice_model(
 }
 
 #[tauri::command]
+pub async fn install_moonshine_quality_profile(
+    app: tauri::AppHandle,
+    profile: MoonshineQualityProfile,
+) -> Result<MoonshineVoiceModelStatus, String> {
+    let resolved = moonshine_quality::resolve(profile);
+    moonshine_voice::install_model(&app, resolved.arch).await
+}
+
+#[tauri::command]
 pub fn is_moonshine_model_installed(app: tauri::AppHandle) -> Result<bool, String> {
     if cfg!(feature = "moonshine-voice") {
-        return Ok(moonshine_voice::model_status(&app, MoonshineVoiceArch::default())?.installed);
+        let resolved = moonshine_quality::resolve(MoonshineQualityProfile::Auto);
+        return Ok(moonshine_voice::model_status(&app, resolved.arch)?.installed);
     }
     Ok(crate::transcription::model_manager::is_moonshine_installed(&app))
 }
@@ -127,7 +152,8 @@ pub fn is_moonshine_model_installed(app: tauri::AppHandle) -> Result<bool, Strin
 #[tauri::command]
 pub async fn download_moonshine_model(app: tauri::AppHandle) -> Result<(), String> {
     if cfg!(feature = "moonshine-voice") {
-        moonshine_voice::install_model(&app, MoonshineVoiceArch::default()).await?;
+        let resolved = moonshine_quality::resolve(MoonshineQualityProfile::Auto);
+        moonshine_voice::install_model(&app, resolved.arch).await?;
         return Ok(());
     }
     crate::commands::download_moonshine_model(app).await

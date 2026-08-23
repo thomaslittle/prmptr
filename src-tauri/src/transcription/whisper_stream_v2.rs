@@ -40,6 +40,10 @@ impl Default for LocalWhisperConfig {
 
 impl From<LocalWhisperConfig> for crate::speech::stream::LocalSpeechConfig {
     fn from(value: LocalWhisperConfig) -> Self {
+        let moonshine_arch = crate::speech::moonshine_quality::resolve(
+            crate::speech::moonshine_quality::MoonshineQualityProfile::Auto,
+        )
+        .arch;
         Self {
             input_device_name: value.input_device_name,
             output_device_name: value.output_device_name,
@@ -56,6 +60,7 @@ impl From<LocalWhisperConfig> for crate::speech::stream::LocalSpeechConfig {
             },
             mute_input: value.mute_input,
             mute_output: value.mute_output,
+            moonshine_arch,
             ..Default::default()
         }
     }
@@ -70,7 +75,8 @@ mod tests {
         let mapped: crate::speech::stream::LocalSpeechConfig = LocalWhisperConfig {
             use_moonshine: true,
             ..Default::default()
-        }.into();
+        }
+        .into();
         assert_eq!(
             mapped.engine,
             if cfg!(feature = "moonshine-voice") {
@@ -78,6 +84,22 @@ mod tests {
             } else {
                 crate::speech::engines::LocalSpeechEngine::MoonshineSherpa
             }
+        );
+    }
+
+    #[test]
+    fn legacy_moonshine_selector_uses_auto_quality_resolution() {
+        let mapped: crate::speech::stream::LocalSpeechConfig = LocalWhisperConfig {
+            use_moonshine: true,
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            mapped.moonshine_arch,
+            crate::speech::moonshine_quality::resolve(
+                crate::speech::moonshine_quality::MoonshineQualityProfile::Auto
+            )
+            .arch
         );
     }
 }

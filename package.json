@@ -14,6 +14,8 @@
     "speech:benchmark:compare": "node scripts/speech-benchmark-compare.mjs",
     "speech:benchmark:test": "node scripts/speech-benchmark.test.mjs && node scripts/speech-benchmark-compare.test.mjs",
     "speech:moonshine:lock-check": "node scripts/check-moonshine-lock.mjs",
+    "speech:moonshine:preflight": "node scripts/moonshine-build-preflight.mjs",
+    "speech:moonshine:qualify": "node scripts/moonshine-build-preflight.mjs --cargo-check",
     "tauri": "tauri",
     "tauri:dev:gpu": "tauri dev --features cuda"
   },
