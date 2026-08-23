@@ -83,25 +83,61 @@ npm run overlay:ready:all
 
 These commands must only be marked PASS when genuinely executed at the retained SHA. They have **not** been marked PASS from the current connector-only execution environment.
 
-## Runtime qualification — NOT TESTED
+## Runtime qualification — Windows 11 (automated, exact SHA)
 
-The following remain NOT TESTED until exact-SHA retained evidence is produced on the relevant platform.
+Automated desktop qualification was executed on Windows 11 (multi-monitor: 2560x1440 primary + 1080x1920 portrait + 2x 1920x1080) against the exact SHAs below, driving the app through its real Tauri IPC surface (mcp-bridge debug plugin + Win32 window inspection + SendInput global chords + GDI screen capture). WebView2 runtime 151.0.4129.101.
 
-### Windows
+### At `371c602` — gate repairs
 
-- dynamic create/destroy
-- deterministic preview rendering
-- real token-by-token stream rendering
-- no duplicate LLM request during overlay use
-- always-on-top behavior across common applications/games
-- drag + resize + persisted bounds
-- hide/show shortcut while another application is focused
-- click-through and recovery from main window
-- Center/Recover after stale monitor coordinates
-- capture protection against PRMPTR native screenshot and Screenpipe OCR
-- DPI / multi-monitor movement
+- `npm run overlay:guard` PASS
+- focused overlay Vitest (8 tests) PASS
+- `tsc --noEmit` PASS (after fixing `live-feed.tsx` null-narrowing)
+- `cargo test overlay --locked` PASS (3 tests; after fixing pre-existing duplicate moonshine commands, non-Result async command, use-after-move in capture timeout path, feature-gated test)
+- `npm test` PASS (85 tests; after adding `vitest.config.ts` with `@` alias + scoping discovery to `lib/__tests__`)
+- `npm run lint` PASS (after ignoring `src-tauri/**` build output, ESM-converting three `scripts/*.js` utilities, deferring a sync setState in the overlay controller)
+- `npm run build` PASS (production Next build, `/overlay` route emitted)
 
-### macOS
+### At `4f122ce` — overlay disable deadlock fix
+
+Defect (P0, reproduced 100% on clean state): `set_overlay_enabled(false)` deadlocked the main thread whenever the overlay was content-protected. Destroying a `WDA_EXCLUDEFROMCAPTURE` WebView2 hangs in DWM/WebView2 teardown. Fix: clear content protection before destroying, destroy off the invoke stack, and never emit runtime events into the overlay webview during its own destruction.
+
+Runtime evidence at this SHA:
+
+- enable (shield ON): window created, visible, `WS_EX_TOPMOST`, display affinity `0x11` — PASS
+- disable (shield ON): window destroyed (hwnd gone), app responsive — PASS (was: permanent hang before fix)
+- external `WM_CLOSE` on overlay: window destroyed, main reconciles, re-enable creates one clean window — PASS
+- rapid token burst (25 publishes @ ~50ms), 8-item Markdown history with code/bullets/headings, opacity 0.45/0.7/1.0 and font scale 0.8/1.0/1.5: no clipping, no runaway growth, app responsive — PASS
+- 4x repeated enable/disable: stable, no create/destroy loop — PASS
+- auto-show semantics: appearance/config changes and mid-stream token updates while hidden do NOT reopen; a genuinely new stream or new completed response auto-shows exactly once — PASS
+- click-through: `WS_EX_TRANSPARENT` set/cleared; `WindowFromPoint` at overlay center hits the window beneath while pass-through and the overlay's own WebView child when interactive; recoverable from main window — PASS
+- global shortcuts while another application (Notepad) held focus: `Ctrl+Shift+H` toggled visibility both directions; `Ctrl+Shift+C` toggled click-through both directions; after disable, chords no longer affect anything (registrations released) — PASS
+- capture shield (empirical, not inferred): GDI `CopyFromScreen` of the overlay region with shield ON excludes the overlay (underlying apps visible); with shield OFF the same capture shows the overlay's unique marker text; display affinity toggles live `0x11`↔`0x0` — PASS
+- graceful-close restart persistence: bounds (300,250 500x400) and enabled state restored exactly — PASS
+- cross-monitor: gradual 20-step drag across monitor boundary with shield ON — PASS; Center/Recover from secondary monitor — PASS
+
+Known limitation (P2, documented, not fixed): an ATOMIC cross-monitor move+resize jump (single `SetWindowPos` changing position and size simultaneously across a DPI boundary) with the shield enabled can deadlock the main thread. Real pointer drags (gradual moves) are unaffected. This is a WebView2/DWM behavior outside PRMPTR's control; the practical user path is safe.
+
+### At `56e59cd` — startup race fixes
+
+Defect (P0, reproduced): with overlay enabled in persisted preferences, application startup auto-restore could deadlock the main thread (majority of boots) and React StrictMode's double-invoked init effect could race two concurrent window builds into an orphaned native window. Fix: serialize overlay window creation behind a manager lock, and defer the controller's initial ownership sync 400ms so the overlay never races the main window's own WebView2 startup burst.
+
+Runtime evidence at this SHA:
+
+- 4/4 boots with overlay enabled: app responsive, exactly one overlay window, topmost, shield `0x11` — PASS (before fix: hang on most boots)
+- 3/3 boots with overlay disabled: no overlay window, app responsive — PASS
+- deterministic self-test through the real transport (thinking → streamed partial → completed Markdown with bold/bullets/code → restore): rendered progression verified by per-stage overlay screenshots — PASS
+- final smoke (enable → stream stage → complete → disable): window destroyed, app responsive — PASS
+
+### Still NOT TESTED on Windows
+
+- real token-by-token LLM stream mirrored into the overlay (provider key configured, but no automatable feed-data source in this environment; the projection path itself is proven by the persisted-session mirror at startup and the deterministic self-test)
+- no-duplicate-LLM-request observation during a real stream (same blocker; the Greenfield guard statically forbids any overlay LLM path and the live bridge is a 15-line mirror)
+- mixed-DPI monitors at different scale factors (all attached displays share one scale)
+- full-screen/game-mode always-on-top behavior
+- Screenpipe OCR round-trip (Screenpipe not running in this environment; GDI exclusion proven directly)
+- macOS and Linux: everything (untouched on this machine)
+
+## Runtime qualification — macOS — NOT TESTED
 
 - successful build with the target-scoped transparent-window feature
 - dynamic create/destroy
@@ -124,6 +160,8 @@ The following remain NOT TESTED until exact-SHA retained evidence is produced on
 Linux capture protection is **UNSUPPORTED by this Tauri window path**, and the application now reports that explicitly rather than leaving it as an ambiguous runtime test.
 
 ## User-test entry status
+
+Windows has completed automated exact-SHA qualification through the checklist's automatable surface (default-off, dynamic create/destroy, deterministic preview, show/hide, auto-show semantics, click-through + recovery, Center/Recover, move/resize/persistence, shortcut isolation, empirical capture shield, restart persistence, stress content) with two P0 deadlocks found and fixed. Real-LLM mirroring on Windows remains NOT TESTED pending a feed-data source, and macOS/Linux remain NOT TESTED.
 
 Source/architecture P0 and P1 overlay work is complete enough to begin user testing. The next authority is the runtime checklist:
 
