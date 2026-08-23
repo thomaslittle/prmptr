@@ -93,8 +93,12 @@ export const useOverlayStore = create<OverlayStoreState>()(
                     const nextPreferences = clampPreferences({
                         ...state.preferences,
                         enabled: runtime.enabled,
-                        clickThrough: runtime.clickThrough,
-                        captureProtected: runtime.captureProtected,
+                        clickThrough: runtime.config.clickThrough,
+                        // Keep the user's desired capture-shield setting distinct
+                        // from the effective runtime value. Linux currently
+                        // reports capture protection unsupported but the setting
+                        // should remain portable if the profile moves to Win/macOS.
+                        captureProtected: runtime.config.captureProtected,
                         width: runtime.config.width,
                         height: runtime.config.height,
                         x: runtime.config.x,
