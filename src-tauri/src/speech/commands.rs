@@ -55,6 +55,25 @@ pub async fn set_speech_mute(
 }
 
 #[tauri::command]
+pub async fn set_speech_context(
+    speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
+    text: String,
+    max_terms: Option<u32>,
+) -> Result<(), String> {
+    let manager = speech.lock().await;
+    manager.set_context(text, max_terms.unwrap_or(200))
+}
+
+#[tauri::command]
+pub async fn set_speech_keyterms(
+    speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
+    keyterms: Vec<String>,
+) -> Result<(), String> {
+    let manager = speech.lock().await;
+    manager.set_keyterms(keyterms)
+}
+
+#[tauri::command]
 pub async fn get_speech_activity(
     speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
 ) -> Result<SpeechActivity, String> {
