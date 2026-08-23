@@ -608,6 +608,7 @@ export default function AiResponse({
             model: config.model,
             apiKey: apiKey || "",
             baseUrl: isLmStudio ? lmBaseUrl : undefined,
+            ...(config.subProvider ? { subProvider: config.subProvider } : {}),
         };
     }, []);
 

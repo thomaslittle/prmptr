@@ -147,6 +147,12 @@ export interface SessionConfig {
     contextSize: number;
     model: string;
     provider: LLMProvider;
+    /**
+     * Provider sub-group for CLI subscription providers that have multiple
+     * gateway "groups" with separate credentials (e.g. OpenCode `opencode`
+     * vs `opencode-go`). Absent for providers without sub-groups.
+     */
+    subProvider?: string;
 }
 
 export interface SessionTemplate {

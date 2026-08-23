@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { streamLLMResponse } from "@/lib/llm-providers";
 import { LLMProvider } from "@/lib/types";
 import { isCliSubscriptionProvider, CliSubscriptionId } from "@/lib/cli-providers";
-import { resolveCliCredential } from "@/lib/cli-providers-server";
+import { resolveCliCredential, resolveCliCredentialForSubProvider } from "@/lib/cli-providers-server";
 import { rejectUntrustedRequest, localHttpBaseUrl } from "@/lib/api-guard";
 
 export const dynamic = "force-dynamic";
@@ -59,6 +59,7 @@ export async function POST(request: NextRequest) {
             imageDataUrl,
             maxTokens,
             temperature,
+            subProvider,
         } = body;
 
         // CLI subscription providers resolve their credentials server-side.
@@ -84,7 +85,10 @@ export async function POST(request: NextRequest) {
         let cliCredential: Awaited<ReturnType<typeof resolveCliCredential>> = null;
         if (typeof provider === "string" && isCliSubscriptionProvider(provider as LLMProvider)) {
             const id = provider as CliSubscriptionId;
-            cliCredential = await resolveCliCredential(id);
+            cliCredential = await resolveCliCredentialForSubProvider(
+                id,
+                typeof subProvider === "string" ? subProvider : undefined
+            );
             if (!cliCredential) {
                 return new Response(
                     JSON.stringify({

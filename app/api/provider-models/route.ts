@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { rejectUntrustedRequest, localHttpBaseUrl } from "@/lib/api-guard";
 import { CODEX_CLI_MODELS, CliSubscriptionId } from "@/lib/cli-providers";
 import { resolveCliCredential } from "@/lib/cli-providers-server";
+import { fetchCodexLiveModels } from "@/lib/codex-app-server";
+import { fetchOpencodeCliModels } from "@/lib/opencode-cli";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +11,8 @@ type Provider = "anthropic" | "openai" | "groq" | "cerebras" | "lmstudio" | "zen
 
 type ProviderModel = {
     id: string;
+    name?: string;
+    subProvider?: string;
     supportsImageInput?: boolean;
 };
 
@@ -168,10 +172,41 @@ export async function POST(request: NextRequest) {
             }
         } else if (provider === "codex-cli") {
             const cred = await resolveCliCredential("codex-cli");
-            models = cred ? CODEX_CLI_MODELS.map((m) => ({ ...m })) : [];
+            // Ask the installed Codex CLI (app-server) for its live ChatGPT
+            // model catalog — always authoritative. If the CLI isn't present /
+            // authenticated / reachable, fall back to the static catalog so
+            // the picker stays usable rather than empty.
+            const live = cred ? await fetchCodexLiveModels() : [];
+            models =
+                live.length > 0
+                    ? live.map((m) => ({
+                          id: m.slug,
+                          ...(m.name ? { name: m.name } : {}),
+                          ...(m.supportsImageInput !== undefined
+                              ? { supportsImageInput: m.supportsImageInput }
+                              : {}),
+                      }))
+                    : CODEX_CLI_MODELS.map((m) => ({ ...m }));
         } else if (provider === "opencode-cli") {
-            const cred = await resolveCliCredential("opencode-cli");
-            models = cred ? await fetchZenModels(cred.token) : [];
+            // Read models directly from the installed OpenCode CLI — no Zen API
+            // key needed. This is authoritative and keeps working offline. The
+            // static Zen fallback is only a safety net if the CLI is missing.
+            const live = await fetchOpencodeCliModels();
+            models =
+                live.length > 0
+                    ? live.map((m) => ({
+                          id: m.slug,
+                          name: m.name,
+                          // The CLI reports each model's gateway group
+                          // (`opencode` vs `opencode-go`). Carry it so the
+                          // picker can label them and the LLM route can select
+                          // the matching auth key.
+                          subProvider: m.provider,
+                          ...(m.supportsImageInput !== undefined
+                              ? { supportsImageInput: m.supportsImageInput }
+                              : {}),
+                      }))
+                    : await fetchZenModels();
         } else if (provider === "openai") {
             if (!body.apiKey) models = [];
             else models = await fetchOpenAiCompatibleModels("https://api.openai.com/v1", body.apiKey);

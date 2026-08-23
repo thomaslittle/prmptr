@@ -2,7 +2,7 @@
 
 import { memo, useState, useCallback, useSyncExternalStore, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { SessionConfig, SessionTemplate, SessionSummary, TriggerMode, ResponseStyle, Personality, MODELS, PERSONALITIES, LLMProvider } from "@/lib/types";
+import { SessionConfig, SessionTemplate, SessionSummary, TriggerMode, ResponseStyle, Personality, MODELS, PERSONALITIES, LLMProvider, ModelDef } from "@/lib/types";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { CaretDown, CaretRight, Plus, Trash, SlidersHorizontal, PencilSimple, Star, PencilLine } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -197,24 +197,32 @@ export default memo(function SessionConfigPanel({
                             body: JSON.stringify(body),
                         });
                         if (!resp.ok) return [provider, []] as const;
-                        const data = (await resp.json()) as { models?: Array<string | { id?: string }> };
-                        const ids = Array.isArray(data.models)
+                        const data = (await resp.json()) as { models?: Array<string | { id?: string; name?: string; subProvider?: string }> };
+                        const models = Array.isArray(data.models)
                             ? data.models
                                 .map((entry) => {
-                                    if (typeof entry === "string") return entry;
-                                    return typeof entry?.id === "string" ? entry.id : "";
+                                    if (typeof entry === "string") return { id: entry };
+                                    return {
+                                        id: typeof entry?.id === "string" ? entry.id : "",
+                                        ...(typeof entry?.name === "string" && entry.name
+                                            ? { name: entry.name }
+                                            : {}),
+                                        ...(typeof entry?.subProvider === "string" && entry.subProvider
+                                            ? { subProvider: entry.subProvider }
+                                            : {}),
+                                    };
                                 })
-                                .filter((id): id is string => !!id)
+                                .filter((m): m is { id: string; name?: string; subProvider?: string } => !!m.id)
                             : [];
-                        return [provider, ids] as const;
+                        return [provider, models] as const;
                     } catch {
                         return [provider, []] as const;
                     }
                 })
             );
-            const out: Partial<Record<LLMProvider, string[]>> = {};
-            for (const [provider, ids] of entries) {
-                out[provider] = [...ids];
+            const out: Partial<Record<LLMProvider, Array<{ id: string; name?: string; subProvider?: string }>>> = {};
+            for (const [provider, models] of entries) {
+                out[provider] = [...models];
             }
             return out;
         },
@@ -230,32 +238,36 @@ export default memo(function SessionConfigPanel({
     const availableModels = useMemo(() => {
         const providers = Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders]));
         const seen = new Set<string>();
-        const merged: typeof MODELS = [];
+        const merged: Array<ModelDef & { subProvider?: string }> = [];
 
         // Remote models first (live from each provider that answered)
         for (const provider of providers) {
-            for (const id of providerModels[provider] ?? []) {
-                const key = `${provider}:${id}`;
+            for (const m of providerModels[provider] ?? []) {
+                const key = `${provider}:${m.subProvider ?? ""}:${m.id}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
-                const name = modelDisplayName(id, provider);
+                const name = m.name ?? modelDisplayName(m.id, provider);
                 merged.push({
-                    id,
+                    id: m.id,
                     name,
                     provider,
                     speed: "fast",
                     description: "Fetched from provider",
                     maxTokens: 4096,
+                    ...(m.subProvider ? { subProvider: m.subProvider } : {}),
                 });
             }
         }
 
         // Static catalog entries for providers that returned nothing
         // (e.g. LM Studio not running, or a fetch failure) so their
-        // defaults don't vanish from the dropdown.
+        // defaults don't vanish from the dropdown. Keyed identically to the
+        // remote loop above (including the empty subProvider segment) so a
+        // static entry never duplicates a live one with the same id.
         for (const m of MODELS) {
             if (!providers.includes(m.provider)) continue;
-            const key = `${m.provider}:${m.id}`;
+            const staticSubProvider = (m as ModelDef & { subProvider?: string }).subProvider ?? "";
+            const key = `${m.provider}:${staticSubProvider}:${m.id}`;
             if (!seen.has(key)) {
                 seen.add(key);
                 merged.push(m);
@@ -539,11 +551,13 @@ export default memo(function SessionConfigPanel({
                             models={availableModels}
                             value={config.model}
                             providerValue={selectedModel?.provider}
+                            subProviderValue={selectedModel?.subProvider}
                             onSelect={(model) => {
                                 onChange({
                                     ...config,
                                     model: model.id,
                                     provider: model.provider,
+                                    subProvider: model.subProvider,
                                 });
                             }}
                         />

@@ -143,11 +143,14 @@ async function* streamOpenAICompatibleResponse(
     request: LLMRequest,
     baseUrl: string
 ): AsyncGenerator<string> {
+    const isZenFamily = request.provider === "zen" || request.provider === "opencode-cli";
     const headers: Record<string, string> = {
         "Content-Type": "application/json",
     };
     if (request.apiKey) {
         headers["Authorization"] = `Bearer ${request.apiKey}`;
+        // The Zen gateway accepts either auth style; send both for parity.
+        if (isZenFamily) headers["x-api-key"] = request.apiKey;
     }
 
     const url = `${baseUrl}/chat/completions`;
@@ -188,6 +191,13 @@ async function* streamOpenAICompatibleResponse(
 
     if (!response.ok) {
         const errorText = await response.text();
+        if (response.status === 401 && isZenFamily) {
+            throw new Error(
+                "OpenCode Zen rejected the API key (401 Invalid API key). " +
+                    'Your saved Zen key looks stale — models under the "OpenCode" group use your CLI login instead; ' +
+                    "otherwise re-run `opencode auth login` or paste a fresh key from console.opencode.ai."
+            );
+        }
         throw new Error(`API error ${response.status}: ${errorText}`);
     }
 

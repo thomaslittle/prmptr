@@ -244,35 +244,96 @@ interface OpencodeZenCred {
     isExpired: boolean;
 }
 
+function credFromOpencodeEntry(entry: OpencodeAuthEntry): OpencodeZenCred | null {
+    if (!entry || typeof entry !== "object") return null;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.key === "string" && record.key) {
+        return { token: record.key, isExpired: false };
+    }
+    if (typeof record.access === "string" && record.access) {
+        let expired = false;
+        if (typeof record.expiry === "string" && record.expiry) {
+            const expiryMs = Date.parse(record.expiry);
+            expired = Number.isFinite(expiryMs) && expiryMs <= Date.now() + EXPIRY_SLACK_MS;
+        }
+        return { token: record.access, isExpired: expired };
+    }
+    return null;
+}
+
+/**
+ * Only these auth.json entries hold credentials valid for the OpenCode Zen
+ * gateway. Users/tools name them inconsistently — observed in the wild:
+ * "opencode-zen", "opencode", "opencode-go". Third-party keys stored by
+ * `opencode auth login` (anthropic, openai, lm-studio, …) are NOT valid Zen
+ * credentials and must be skipped.
+ */
+function isZenCapableEntryId(id: string): boolean {
+    return /zen/i.test(id) || /^opencode(-|$)/i.test(id);
+}
+
+function zenEntrySortScore(id: string): number {
+    // "zen"-named entries first (the canonical Zen key), then plain
+    // "opencode"/"opencode-*" keys.
+    return /zen/i.test(id) ? 0 : 1;
+}
+
 async function readOpencodeZenCredential(): Promise<OpencodeZenCred | null> {
+    let fallback: OpencodeZenCred | null = null;
     for (const path of opencodeAuthCandidates()) {
         const parsed = await tryReadJsonFile(path);
         if (!parsed || typeof parsed !== "object") continue;
         const entries = parsed as Record<string, OpencodeAuthEntry>;
-        // Prefer the Zen key, but fall back to any logged-in provider entry so
-        // an OpenCode install that only has a plain "opencode" key (common on
-        // Windows: `~/.local/share/opencode/auth.json`) still resolves. OpenCode
-        // stores an `opencode`/`opencode-go` api key the same as a Zen one.
-        const keys = Object.keys(entries);
-        const zenKey = keys.find((id) => /zen/i.test(id));
-        const anyKey = zenKey ?? keys[0];
-        if (!anyKey) continue;
-        const entry = entries[anyKey];
-        if (!entry || typeof entry !== "object") continue;
-        const record = entry as Record<string, unknown>;
-        if (typeof record.key === "string" && record.key) {
-            return { token: record.key, isExpired: false };
-        }
-        if (typeof record.access === "string" && record.access) {
-            let expired = false;
-            if (typeof record.expiry === "string" && record.expiry) {
-                const expiryMs = Date.parse(record.expiry);
-                expired = Number.isFinite(expiryMs) && expiryMs <= Date.now() + EXPIRY_SLACK_MS;
-            }
-            return { token: record.access, isExpired: expired };
+        const usableIds = Object.keys(entries)
+            .filter((id) => isZenCapableEntryId(id))
+            .sort((a, b) => zenEntrySortScore(a) - zenEntrySortScore(b) || a.localeCompare(b));
+        for (const id of usableIds) {
+            const cred = credFromOpencodeEntry(entries[id]);
+            if (!cred?.token) continue;
+            if (!cred.isExpired) return cred;
+            fallback ??= cred;
         }
     }
-    return null;
+    return fallback;
+}
+
+/**
+ * Resolve the OpenCode credential for a specific provider-group (e.g.
+ * `opencode` vs `opencode-go`). OpenCode auth.json can hold *multiple*
+ * gateway keys, each valid for its own plan (Zen "opencode" vs the paid
+ * "opencode-go" group). The model identity carries the group as `subProvider`,
+ * so a "go" model must use the `opencode-go` key — never the plain Zen key.
+ *
+ * When `group` is unknown/absent we fall back to the canonical Zen credential,
+ * matching the legacy single-key behaviour.
+ */
+async function resolveOpencodeCredentialForGroup(group?: string): Promise<CliCredential | null> {
+    if (!group || group === "opencode") {
+        return resolveOpencodeCliCredential();
+    }
+
+    // Normalize the group to an auth.json id. The CLI reports the prefix as
+    // `opencode-go`; auth.json keys it the same way (mirroring this).
+    const normalizedGroup = group.trim().replace(/\/+$/, "");
+    for (const path of opencodeAuthCandidates()) {
+        const parsed = await tryReadJsonFile(path);
+        if (!parsed || typeof parsed !== "object") continue;
+        const entries = parsed as Record<string, OpencodeAuthEntry>;
+        // Prefer an exact match, then a "*-group" suffix match (e.g. group
+        // `opencode-go` may be stored as `opencode-go` or `opencode_go`).
+        const exact = entries[normalizedGroup];
+        const entry =
+            exact ??
+            Object.entries(entries).find(([id]) => {
+                const a = id.toLowerCase().replace(/[-_]/g, "");
+                const b = normalizedGroup.toLowerCase().replace(/[-_]/g, "");
+                return a === b || id.toLowerCase() === "opencode-go";
+            })?.[1];
+        const cred = entry ? credFromOpencodeEntry(entry) : null;
+        if (cred?.token) return { token: cred.token };
+    }
+    // No group-specific key — fall back to the canonical Zen credential.
+    return resolveOpencodeCliCredential();
 }
 
 // ── Credential resolution (call time) ─────────────────────────
@@ -399,6 +460,21 @@ export async function resolveCliCredential(
         case "opencode-cli":
             return resolveOpencodeCliCredential();
     }
+}
+
+/**
+ * Like `resolveCliCredential("opencode-cli")`, but selects the credential
+ * matching the model's provider-group (`subProvider`), so a `opencode-go`
+ * model uses the `opencode-go` key rather than the plain Zen key.
+ */
+export async function resolveCliCredentialForSubProvider(
+    id: CliSubscriptionId,
+    subProvider?: string
+): Promise<CliCredential | null> {
+    if (id !== "opencode-cli" || !subProvider) {
+        return resolveCliCredential(id);
+    }
+    return resolveOpencodeCredentialForGroup(subProvider);
 }
 
 // ── Detection ─────────────────────────────────────────────────

@@ -12,6 +12,7 @@ interface PickableModel {
     id: string;
     name: string;
     provider: LLMProvider;
+    subProvider?: string;
 }
 
 type ProviderIconComponent = React.ComponentType<{ className?: string }>;
@@ -20,6 +21,7 @@ interface ModelPickerProps {
     models: PickableModel[];
     value?: string;
     providerValue?: LLMProvider;
+    subProviderValue?: string;
     onSelect: (model: PickableModel) => void;
     className?: string;
 }
@@ -28,6 +30,7 @@ interface RowEntry {
     id: string;
     provider: LLMProvider;
     displayName: string;
+    groupSubProvider?: string;
     isLegacy: boolean;
     version: { major: number; minor: number } | null;
 }
@@ -53,6 +56,30 @@ function providerMeta(provider: LLMProvider) {
     };
 }
 
+// Zen (API key) and opencode-cli (CLI) are both the same OpenCode gateway, so
+// they collapse into ONE rail/group. Internally each model keeps its real
+// `provider` so LLM routing picks the right credential; the picker groups them
+// under a single "opencode" group for display and filtering.
+type OpenCodeGroup = "opencode";
+type GroupKey = LLMProvider | OpenCodeGroup;
+
+const OPENCODE_GROUP_KEY: OpenCodeGroup = "opencode";
+
+function isOpenCodeProvider(provider: LLMProvider): boolean {
+    return provider === "zen" || provider === "opencode-cli";
+}
+
+function groupKeyOfProvider(provider: LLMProvider): GroupKey {
+    return isOpenCodeProvider(provider) ? OPENCODE_GROUP_KEY : provider;
+}
+
+function groupMeta(group: GroupKey) {
+    if (group === OPENCODE_GROUP_KEY) {
+        return { label: "OpenCode", monogram: "O", icon: OpenCodeIcon };
+    }
+    return providerMeta(group);
+}
+
 function ProviderBrandIcon({ provider, className }: { provider: LLMProvider; className?: string }) {
     const meta = providerMeta(provider);
     if (meta.icon) {
@@ -66,8 +93,8 @@ function ProviderBrandIcon({ provider, className }: { provider: LLMProvider; cla
     );
 }
 
-function ProviderRailIcon({ provider, active, onClick }: { provider: LLMProvider; active: boolean; onClick: () => void }) {
-    const meta = providerMeta(provider);
+function ProviderRailIcon({ group, active, onClick }: { group: GroupKey; active: boolean; onClick: () => void }) {
+    const meta = groupMeta(group);
     return (
         <button
             type="button"
@@ -86,7 +113,13 @@ function ProviderRailIcon({ provider, active, onClick }: { provider: LLMProvider
                     active ? "opacity-100" : "opacity-0",
                 )}
             />
-            <ProviderBrandIcon provider={provider} className="size-5" />
+            {meta.icon ? (
+                <span className="flex size-5 items-center justify-center">
+                    <meta.icon className="size-5" />
+                </span>
+            ) : (
+                <span className="text-[9px] font-bold uppercase text-foreground/60">{meta.monogram}</span>
+            )}
         </button>
     );
 }
@@ -105,10 +138,10 @@ function loadFavorites(): Set<FavoriteKey> {
     }
 }
 
-export function ModelPicker({ models, value, providerValue, onSelect, className }: ModelPickerProps) {
+export function ModelPicker({ models, value, providerValue, subProviderValue, onSelect, className }: ModelPickerProps) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
-    const [activeProvider, setActiveProvider] = useState<LLMProvider | "favorites">("favorites");
+    const [activeProvider, setActiveProvider] = useState<GroupKey | "favorites">("favorites");
     const [index, setIndex] = useState(0);
     const listRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -135,38 +168,52 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
     const [expandedLegacy, setExpandedLegacy] = useState(false);
 
     const providerOrder = useMemo(() => {
-        const seen: LLMProvider[] = [];
+        const seen: GroupKey[] = [];
         for (const m of models) {
-            if (!seen.includes(m.provider)) seen.push(m.provider);
+            const g = groupKeyOfProvider(m.provider);
+            if (!seen.includes(g)) seen.push(g);
         }
         return seen;
     }, [models]);
 
     const grouped = useMemo(() => {
-        const map: Record<LLMProvider, PickableModel[]> = {} as Record<LLMProvider, PickableModel[]>;
+        const map: Record<GroupKey, PickableModel[]> = {} as Record<GroupKey, PickableModel[]>;
         for (const m of models) {
-            (map[m.provider] ??= []).push(m);
+            (map[groupKeyOfProvider(m.provider)] ??= []).push(m);
         }
         return map;
     }, [models]);
 
-    // Build current + legacy model rows for the active provider (or all
+    // Build current + legacy model rows for the active group (or all
     // favorites). Rows carry version info so we can sort newest-first and
     // collapse older models under a "Legacy models" section, like t3chat.
     const entriesForProvider = useCallback(
-        (provider: LLMProvider): RowEntry[] => {
-            const list = grouped[provider] ?? [];
-            const ids = list.map((m) => m.id);
-            return list.map((m) => {
-                const v = modelVersionInfo(m.id, provider, ids);
-                return {
+        (group: GroupKey): RowEntry[] => {
+            const list = grouped[group] ?? [];
+            // Dedupe by (provider, subProvider, id) — already done upstream in
+            // `availableModels`, but the group merge can surface identical ids
+            // across zen + opencode-cli that we must not render twice.
+            const seen = new Set<string>();
+            const rows: RowEntry[] = [];
+            for (const m of list) {
+                const key = `${m.provider}:${m.subProvider ?? ""}:${m.id}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                // Version/legacy is computed per-model using its own provider.
+                const ids = (grouped[group] ?? [])
+                    .filter((x) => x.provider === m.provider)
+                    .map((x) => x.id);
+                const v = modelVersionInfo(m.id, m.provider, ids);
+                rows.push({
                     id: m.id,
-                    provider,
-                    displayName: m.name || modelDisplayName(m.id, provider),
+                    provider: m.provider,
+                    displayName: m.name || modelDisplayName(m.id, m.provider),
+                    groupSubProvider: m.subProvider,
                     isLegacy: v.isLegacy,
                     version: v.version,
-                };
-            });
+                });
+            }
+            return rows;
         },
         [grouped]
     );
@@ -177,7 +224,7 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
         if (activeProvider === "favorites") {
             for (const p of providerOrder) {
                 for (const row of entriesForProvider(p)) {
-                    if (favorites.has(favoriteKey(p, row.id))) rows.push(row);
+                    if (favorites.has(favoriteKey(row.provider, row.id))) rows.push(row);
                 }
             }
         } else {
@@ -200,11 +247,14 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
         if (!q) return rows;
         return rows.filter((r) => {
             const meta = providerMeta(r.provider);
+            const group = groupMeta(groupKeyOfProvider(r.provider));
             return (
                 r.displayName.toLowerCase().includes(q) ||
                 r.id.toLowerCase().includes(q) ||
                 r.provider.toLowerCase().includes(q) ||
-                meta.label.toLowerCase().includes(q)
+                (r.groupSubProvider?.toLowerCase().includes(q) ?? false) ||
+                meta.label.toLowerCase().includes(q) ||
+                group.label.toLowerCase().includes(q)
             );
         });
     }, [query]);
@@ -219,10 +269,18 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
         return expandedLegacy ? [...visibleCurrent, ...visibleLegacy] : visibleCurrent;
     }, [visibleCurrent, visibleLegacy, expandedLegacy]);
 
+    const matchesCurrent = useCallback(
+        (row: RowEntry) =>
+            row.id === value &&
+            row.provider === providerValue &&
+            (row.groupSubProvider ?? undefined) === (subProviderValue ?? undefined),
+        [value, providerValue, subProviderValue]
+    );
+
     const selectedIndex = useMemo(() => {
         if (!value) return -1;
-        return visibleRows.findIndex((e) => e.id === value && e.provider === providerValue);
-    }, [visibleRows, value, providerValue]);
+        return visibleRows.findIndex((e) => matchesCurrent(e));
+    }, [visibleRows, matchesCurrent, value]);
 
     // Clamp the keyboard index to the current visible list during render so we
     // never schedule a state update purely to correct it.
@@ -241,7 +299,8 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
             setOpen(next);
             if (next) {
                 const initial =
-                    providerValue ?? (favorites.size > 0 ? "favorites" : providerOrder[0]);
+                    (providerValue ? groupKeyOfProvider(providerValue) : undefined) ??
+                    (favorites.size > 0 ? "favorites" : providerOrder[0]);
                 setActiveProvider(initial);
                 setIndex(0);
                 // Start with the legacy section collapsed unless the current
@@ -257,7 +316,13 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
 
     const commit = useCallback(
         (entry: RowEntry) => {
-            const model = (grouped[entry.provider] ?? []).find((m) => m.id === entry.id);
+            const candidates = grouped[groupKeyOfProvider(entry.provider)] ?? [];
+            const model = candidates.find(
+                (m) =>
+                    m.id === entry.id &&
+                    m.provider === entry.provider &&
+                    (m.subProvider ?? undefined) === (entry.groupSubProvider ?? undefined)
+            ) ?? candidates.find((m) => m.id === entry.id && m.provider === entry.provider);
             if (!model) return;
             onSelect(model);
             setOpen(false);
@@ -313,7 +378,13 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
         else if (itemBottom > viewBottom) list.scrollTop = itemBottom - list.clientHeight;
     }, [clampedIndex, visibleRows.length]);
 
-    const currentModel = value ? models.find((m) => m.id === value) : undefined;
+    const currentModel = value
+        ? models.find(
+              (m) =>
+                  m.id === value &&
+                  (m.subProvider ?? undefined) === (subProviderValue ?? undefined)
+          ) ?? models.find((m) => m.id === value)
+        : undefined;
     const currentDisplayName = currentModel
         ? currentModel.name || modelDisplayName(currentModel.id, currentModel.provider)
         : undefined;
@@ -376,13 +447,13 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
                                     </button>
                                 </div>
                                 <div className="border-b border-border/70" aria-hidden="true" />
-                                {providerOrder.map((p) => (
-                                    <div key={p} className="relative w-full">
+                                {providerOrder.map((g) => (
+                                    <div key={g} className="relative w-full">
                                         <ProviderRailIcon
-                                            provider={p}
-                                            active={activeProvider === p}
+                                            group={g}
+                                            active={activeProvider === g}
                                             onClick={() => {
-                                                setActiveProvider(p);
+                                                setActiveProvider(g);
                                                 setIndex(0);
                                             }}
                                         />
@@ -424,12 +495,12 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
                             ) : (
                                 <>
                                     {visibleCurrent.map((row, i) => {
-                                        const isSelected = row.id === value && row.provider === providerValue;
+                                        const isSelected = matchesCurrent(row);
                                         const isActive = activeIndex === i;
                                         const isFavorite = favorites.has(favoriteKey(row.provider, row.id));
                                         return (
                                             <Row
-                                                key={`${row.provider}:${row.id}`}
+                                                key={`${row.provider}:${row.groupSubProvider ?? ""}:${row.id}`}
                                                 row={row}
                                                 index={i}
                                                 isSelected={isSelected}
@@ -467,12 +538,12 @@ export function ModelPicker({ models, value, providerValue, onSelect, className 
                                             {expandedLegacy &&
                                                 visibleLegacy.map((row, j) => {
                                                     const offset = visibleCurrent.length + 1 + j;
-                                                    const isSelected = row.id === value && row.provider === providerValue;
+                                                    const isSelected = matchesCurrent(row);
                                                     const isActive = activeIndex === offset;
                                                     const isFavorite = favorites.has(favoriteKey(row.provider, row.id));
                                                     return (
                                                         <Row
-                                                            key={`${row.provider}:${row.id}`}
+                                                            key={`${row.provider}:${row.groupSubProvider ?? ""}:${row.id}`}
                                                             row={row}
                                                             index={offset}
                                                             isSelected={isSelected}
@@ -539,7 +610,7 @@ function Row({
                 <div className="mt-1 flex items-center gap-1.5">
                     <ProviderBrandIcon provider={row.provider} className="size-3" />
                     <span className="truncate text-xs leading-snug text-muted-foreground/70">
-                        {meta.label} · {row.provider}
+                        {row.groupSubProvider ? `${meta.label} · ${row.groupSubProvider}` : `${meta.label} · ${row.provider}`}
                     </span>
                 </div>
             </div>
@@ -547,12 +618,13 @@ function Row({
                 <span className="rounded-sm px-1.5 text-[10px] leading-4 text-muted-foreground/70 group-hover:text-muted-foreground">
                     Ctrl+{index + 1}
                 </span>
-                <button
-                    type="button"
+                <span
+                    role="button"
+                    tabIndex={-1}
                     aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
                     onClick={onToggleFavorite}
                     className={cn(
-                        "-mr-1 shrink-0 text-muted-foreground/70 transition-[color,opacity] hover:text-foreground",
+                        "-mr-1 shrink-0 cursor-pointer text-muted-foreground/70 transition-[color,opacity] hover:text-foreground",
                         isFavorite ? "text-yellow-500 opacity-100" : "opacity-60 group-hover:opacity-100",
                     )}
                 >
@@ -560,7 +632,7 @@ function Row({
                         weight={isFavorite ? "fill" : "regular"}
                         className="size-3"
                     />
-                </button>
+                </span>
             </div>
         </button>
     );
