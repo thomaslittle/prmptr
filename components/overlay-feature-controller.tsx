@@ -69,6 +69,13 @@ export default function OverlayFeatureController() {
         let unlisten: (() => void) | null = null;
         void (async () => {
             try {
+                // Let the main window finish its own startup burst before
+                // creating the overlay. Creating a second WebView while the
+                // first is still initializing can deadlock WebView2 setup on
+                // Windows, and the overlay is an optional consumer with no
+                // reason to race the primary surface.
+                await new Promise((resolve) => setTimeout(resolve, 400));
+                if (disposed) return;
                 const state = await setOverlayEnabled(preferences.enabled, nativeConfig);
                 if (!disposed) {
                     applyRuntime(state);

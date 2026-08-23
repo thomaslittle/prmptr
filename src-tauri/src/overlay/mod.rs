@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+﻿use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -143,7 +143,15 @@ struct OverlayInner {
     content: OverlayContent,
 }
 
-pub struct OverlayManager { inner: Mutex<OverlayInner> }
+pub struct OverlayManager {
+    inner: Mutex<OverlayInner>,
+    /// Serializes window creation. Two concurrent `set_overlay_enabled(true)`
+    /// invocations (e.g. React StrictMode double-invoked effects in dev) can
+    /// otherwise both observe "no window" and race `WebviewWindowBuilder`,
+    /// producing an orphaned native window whose teardown can hang the main
+    /// thread on Windows.
+    create_lock: Mutex<()>,
+}
 
 impl Default for OverlayManager {
     fn default() -> Self {
@@ -153,6 +161,7 @@ impl Default for OverlayManager {
                 config: OverlayWindowConfig::default(),
                 content: OverlayContent::default(),
             }),
+            create_lock: Mutex::new(()),
         }
     }
 }
@@ -204,7 +213,15 @@ fn should_auto_show(previous: &OverlayContent, next: &OverlayContent) -> bool {
     stream_started || new_completed_response
 }
 
-fn ensure_window(app: &tauri::AppHandle, config: &OverlayWindowConfig) -> Result<tauri::WebviewWindow, String> {
+fn ensure_window(
+    app: &tauri::AppHandle,
+    manager: &OverlayManager,
+    config: &OverlayWindowConfig,
+) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) { return Ok(window); }
+    // Hold the creation lock across the check-and-build so concurrent callers
+    // cannot double-create the single overlay window.
+    let _create_guard = manager.create_lock.lock().map_err(|_| "Overlay creation state is unavailable".to_string())?;
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) { return Ok(window); }
     let effective_capture_protection = config.capture_protected && capture_protection_supported();
     let mut builder = WebviewWindowBuilder::new(app, OVERLAY_LABEL, WebviewUrl::App("overlay".into()))
@@ -272,7 +289,7 @@ pub async fn set_overlay_enabled(
     let config = config.normalized();
     if enabled {
         let existed = app.get_webview_window(OVERLAY_LABEL).is_some();
-        let window = ensure_window(&app, &config)?;
+        let window = ensure_window(&app, &manager, &config)?;
         if let Err(error) = apply_window_config(&window, &config, None)
             .and_then(|_| window.show().map_err(|e| format!("Unable to show overlay: {e}")))
         {
@@ -331,7 +348,7 @@ pub async fn toggle_overlay_visibility(
         (inner.enabled, inner.config.clone())
     };
     if !enabled { return Err("Overlay is disabled. Enable it explicitly before showing it.".to_string()); }
-    let window = ensure_window(&app, &config)?;
+    let window = ensure_window(&app, &manager, &config)?;
     if window.is_visible().unwrap_or(false) {
         window.hide().map_err(|error| format!("Unable to hide overlay: {error}"))?;
     } else {
@@ -365,7 +382,7 @@ pub async fn center_overlay(
     if !enabled { return Err("Overlay is disabled. Enable it before centering it.".to_string()); }
     config.x = None;
     config.y = None;
-    let window = ensure_window(&app, &config)?;
+    let window = ensure_window(&app, &manager, &config)?;
     window.center().map_err(|error| format!("Unable to center overlay: {error}"))?;
     let position = window.outer_position().ok().map(|p| (p.x, p.y));
     manager.update_bounds(position, None);
@@ -404,7 +421,7 @@ pub async fn publish_overlay_content(
         (inner.enabled, inner.config.clone(), auto_show_now)
     };
     if enabled {
-        let window = ensure_window(&app, &config)?;
+        let window = ensure_window(&app, &manager, &config)?;
         let _ = app.emit_to(OVERLAY_LABEL, OVERLAY_CONTENT_EVENT, &content);
         if allow_auto_show && config.auto_show_on_response && auto_show_now {
             window.show().map_err(|error| format!("Unable to auto-show overlay: {error}"))?;
