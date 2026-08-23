@@ -9,6 +9,7 @@ import {
     setSpeakerDiarizationPreference,
     syncSpeakerDiarizationPreference,
 } from "@/lib/speaker-diarization";
+import { useSpeakerAliasStore } from "@/lib/stores/speaker-alias-store";
 import { isTauri } from "@/lib/tauri";
 import {
     getSpeechCapabilities,
@@ -23,6 +24,8 @@ interface LiveFeedProps {
     outputDevice?: string;
     onCollapse?: () => void;
 }
+
+type SpeakerFeedItem = FeedItem & { speakerKey?: string };
 
 function sourceMatchesDevice(source: string, device?: string): boolean {
     if (!device) return false;
@@ -59,6 +62,8 @@ export default memo(function LiveFeed({
     const [diarizationEnabled, setDiarizationEnabled] = useState(true);
     const [diarizationBusy, setDiarizationBusy] = useState(false);
     const [speechCapabilities, setSpeechCapabilities] = useState<SpeechCapabilities | null>(null);
+    const [editingSpeaker, setEditingSpeaker] = useState<{ key: string; value: string } | null>(null);
+    const setSpeakerAlias = useSpeakerAliasStore((state) => state.setAlias);
     const desktopRuntime = isTauri();
 
     useEffect(() => {
@@ -95,6 +100,12 @@ export default memo(function LiveFeed({
         }
     };
 
+    const saveSpeakerAlias = () => {
+        if (!editingSpeaker) return;
+        setSpeakerAlias(editingSpeaker.key, editingSpeaker.value);
+        setEditingSpeaker(null);
+    };
+
     const systemCaptureUnavailable =
         desktopRuntime && speechCapabilities && !speechCapabilities.systemCapture.available;
 
@@ -122,7 +133,7 @@ export default memo(function LiveFeed({
                             disabled={diarizationBusy}
                             onClick={toggleDiarization}
                             className="flex items-center gap-1.5 rounded-sm border border-border/80 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:opacity-50 transition-colors cursor-pointer"
-                            title="Separate system-audio transcript lines by detected speaker. Enabled by default; disable to reduce speaker-embedding work."
+                            title="Separate system-audio transcript lines by detected speaker. Enabled by default; disable to reduce native diarization work."
                         >
                             <span className={`size-1 rounded-full ${diarizationEnabled ? "bg-emerald-400" : "bg-muted-foreground/40"}`} />
                             Speakers {diarizationEnabled ? "on" : "off"}
@@ -165,43 +176,74 @@ export default memo(function LiveFeed({
                     </Empty>
                 ) : (
                     <div className="flex flex-col">
-                        {items.map((item, i) => (
-                            <div
-                                key={item.id}
-                                className={`feed-item-enter px-4 py-2.5 ${i > 0 ? "border-t border-border" : ""} hover:bg-muted/30 transition-colors`}
-                            >
-                                <div className="flex items-center gap-1.5 mb-1">
-                                    {item.type === "audio" ? (
-                                        <Microphone weight="fill" className="size-2.5 text-primary/60" />
-                                    ) : (
-                                        <Monitor weight="fill" className="size-2.5 text-muted-foreground/60" />
-                                    )}
+                        {items.map((item, i) => {
+                            const speakerKey = (item as SpeakerFeedItem).speakerKey;
+                            const isOutput = item.type === "audio" &&
+                                (item.deviceType === "output" || sourceMatchesDevice(item.source, outputDevice));
+                            const speakerLabel = item.speakerLabel ??
+                                (item.speaker != null ? `Speaker ${item.speaker}` : "Them");
+                            return (
+                                <div
+                                    key={item.id}
+                                    className={`feed-item-enter px-4 py-2.5 ${i > 0 ? "border-t border-border" : ""} hover:bg-muted/30 transition-colors`}
+                                >
+                                    <div className="flex items-center gap-1.5 mb-1">
+                                        {item.type === "audio" ? (
+                                            <Microphone weight="fill" className="size-2.5 text-primary/60" />
+                                        ) : (
+                                            <Monitor weight="fill" className="size-2.5 text-muted-foreground/60" />
+                                        )}
 
-                                    {item.type === "audio" && (item.deviceType === "input" || sourceMatchesDevice(item.source, inputDevice)) && (
-                                        <span className="text-[9px] text-primary/70 font-medium uppercase tracking-wider">
-                                            You
-                                        </span>
-                                    )}
-                                    {item.type === "audio" && (item.deviceType === "output" || sourceMatchesDevice(item.source, outputDevice)) && (
-                                        <span className={`text-[9px] font-medium uppercase tracking-wider ${speakerColor(item.speaker)}`}>
-                                            {item.speakerLabel ?? (item.speaker != null ? `Speaker ${item.speaker}` : "Them")}
-                                        </span>
-                                    )}
+                                        {item.type === "audio" && (item.deviceType === "input" || sourceMatchesDevice(item.source, inputDevice)) && (
+                                            <span className="text-[9px] text-primary/70 font-medium uppercase tracking-wider">
+                                                You
+                                            </span>
+                                        )}
+                                        {isOutput && (
+                                            editingSpeaker?.key === speakerKey ? (
+                                                <input
+                                                    autoFocus
+                                                    value={editingSpeaker.value}
+                                                    onChange={(event) => setEditingSpeaker({
+                                                        key: editingSpeaker.key,
+                                                        value: event.target.value,
+                                                    })}
+                                                    onBlur={saveSpeakerAlias}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter") event.currentTarget.blur();
+                                                        if (event.key === "Escape") setEditingSpeaker(null);
+                                                    }}
+                                                    className={`h-5 max-w-36 rounded-sm border border-border bg-background px-1 text-[9px] font-medium uppercase tracking-wider outline-none focus:border-primary/60 ${speakerColor(item.speaker)}`}
+                                                    aria-label="Speaker name"
+                                                />
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    disabled={!speakerKey}
+                                                    onClick={() => speakerKey && setEditingSpeaker({ key: speakerKey, value: speakerLabel })}
+                                                    className={`text-[9px] font-medium uppercase tracking-wider ${speakerColor(item.speaker)} ${speakerKey ? "cursor-text hover:underline underline-offset-2" : ""}`}
+                                                    title={speakerKey ? "Click to name this speaker" : undefined}
+                                                >
+                                                    {speakerLabel}
+                                                </button>
+                                            )
+                                        )}
 
-                                    <span className="text-[9px] text-muted-foreground/50 truncate ml-auto">
-                                        {item.source || "Transcript"}
-                                        {item.windowName ? ` / ${item.windowName}` : ""}
-                                    </span>
-                                    <span className="text-[9px] text-muted-foreground/40 tabular-nums shrink-0">
-                                        {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                                    </span>
+                                        <span className="text-[9px] text-muted-foreground/50 truncate ml-auto">
+                                            {item.source || "Transcript"}
+                                            {item.windowName ? ` / ${item.windowName}` : ""}
+                                        </span>
+                                        <span className="text-[9px] text-muted-foreground/40 tabular-nums shrink-0">
+                                            {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                                        </span>
+                                    </div>
+
+                                    <p className="text-[11px] leading-relaxed text-foreground/80">
+                                        {item.content.length > 300 ? `${item.content.slice(0, 300)}...` : item.content}
+                                    </p>
                                 </div>
-
-                                <p className="text-[11px] leading-relaxed text-foreground/80">
-                                    {item.content.length > 300 ? `${item.content.slice(0, 300)}...` : item.content}
-                                </p>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>

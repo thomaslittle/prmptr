@@ -14,21 +14,25 @@ import {
 } from "@/lib/speech-runtime";
 import { useSessionStore } from "@/lib/stores/session-store";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { useSpeakerAliasStore } from "@/lib/stores/speaker-alias-store";
 import { useSpeechContextSourceStore } from "@/lib/stores/speech-context-source-store";
 import { useSpeechStore } from "@/lib/stores/speech-store";
 import { useTranscriptStore } from "@/lib/stores/transcript-store";
-import { transcriptLinesToFeedItems } from "@/lib/transcript";
+import { transcriptLineToFeedItems } from "@/lib/transcript";
 import type { FeedItem } from "@/lib/types";
 
 function desktopRuntime(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+type SpeakerFeedItem = FeedItem & { speakerKey?: string };
+
 export function useLocalTranscription() {
     const lines = useTranscriptStore((state) => state.lines);
     const upsertLine = useTranscriptStore((state) => state.upsertLine);
     const clear = useTranscriptStore((state) => state.clear);
     const ocrItems = useSpeechContextSourceStore((state) => state.ocrItems);
+    const aliases = useSpeakerAliasStore((state) => state.aliases);
     const sessionContext = useSessionStore((state) => state.config.context);
     const transcriptionMode = useSettingsStore((state) => state.settings.transcriptionMode ?? "local-whisper");
     const localSttEngine = useSettingsStore((state) => state.settings.localSttEngine ?? "whisper");
@@ -139,6 +143,24 @@ export function useLocalTranscription() {
         return () => window.clearTimeout(timer);
     }, [ocrItems, sessionContext, preferences, lines.length, localMoonshineSelected]);
 
-    const items = useMemo(() => transcriptLinesToFeedItems(lines), [lines]);
+    const items = useMemo(() => {
+        return [...lines]
+            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+            .flatMap((line) => {
+                const projected = transcriptLineToFeedItems(line) as SpeakerFeedItem[];
+                for (const item of projected) {
+                    if (line.trackId !== "system") continue;
+                    const span = line.speakerSpans.find((candidate) =>
+                        item.id.includes(`:speaker:${candidate.speakerKey}:`)
+                    ) ?? line.speakerSpans[0];
+                    if (!span) continue;
+                    item.speakerKey = span.speakerKey;
+                    const alias = aliases[span.speakerKey];
+                    if (alias) item.speakerLabel = alias;
+                }
+                return projected;
+            });
+    }, [lines, aliases]);
+
     return { items, lines, clear };
 }
