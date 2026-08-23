@@ -77,6 +77,15 @@ pub async fn set_speech_keyterms(
 }
 
 #[tauri::command]
+pub async fn set_speech_diarization_enabled(
+    enabled: bool,
+) -> Result<crate::speech::moonshine_stream::SpeakerDiarizationRuntimeUpdate, String> {
+    tokio::task::spawn_blocking(move || crate::speech::moonshine_stream::reconfigure_diarization(enabled))
+        .await
+        .map_err(|error| format!("Diarization reconfiguration task failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn get_speech_activity(
     speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
 ) -> Result<SpeechActivity, String> {

@@ -1,5 +1,12 @@
 const STORAGE_KEY = "prmptr-speaker-diarization";
 
+export interface SpeakerDiarizationRuntimeUpdate {
+    enabled: boolean;
+    nativeComputeActive: boolean;
+    nativeStreamsRestarted: boolean;
+    engine: string;
+}
+
 export function parseSpeakerDiarizationPreference(raw: string | null): boolean {
     if (raw == null) return true;
     const normalized = raw.trim().toLowerCase();
@@ -20,12 +27,23 @@ export async function syncSpeakerDiarizationPreference(enabled?: boolean): Promi
     if (!isDesktopRuntime()) return effective;
 
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<boolean>("set_speaker_diarization_enabled", { enabled: effective });
+    const update = await invoke<SpeakerDiarizationRuntimeUpdate>("set_speech_diarization_enabled", {
+        enabled: effective,
+    });
+    return update.enabled;
 }
 
 export async function setSpeakerDiarizationPreference(enabled: boolean): Promise<boolean> {
+    const previous = getSpeakerDiarizationPreference();
     if (typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, String(enabled));
     }
-    return syncSpeakerDiarizationPreference(enabled);
+    try {
+        return await syncSpeakerDiarizationPreference(enabled);
+    } catch (error) {
+        if (typeof window !== "undefined") {
+            window.localStorage.setItem(STORAGE_KEY, String(previous));
+        }
+        throw error;
+    }
 }
