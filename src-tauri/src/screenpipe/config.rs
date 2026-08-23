@@ -13,6 +13,7 @@ pub struct ScreenpipeConfig {
     pub deepgram_api_key: Option<String>,
     pub vad_sensitivity: VadSensitivity,
     pub disable_vision: bool,
+    pub disable_audio: bool,
     pub audio_chunk_duration: u32,
 }
 
@@ -21,6 +22,7 @@ pub struct ScreenpipeConfig {
 pub enum TranscriptionEngine {
     WhisperTiny,
     WhisperLargeV3TurboQuantized,
+    Disabled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,12 +46,28 @@ impl Default for ScreenpipeConfig {
             deepgram_api_key: None,
             vad_sensitivity: VadSensitivity::High,
             disable_vision: true,
+            disable_audio: false,
             audio_chunk_duration: 5,
         }
     }
 }
 
 impl ScreenpipeConfig {
+    pub fn context_sidecar(port: u16) -> Self {
+        Self {
+            port,
+            disable_audio: true,
+            disable_vision: false,
+            transcription_engine: TranscriptionEngine::Disabled,
+            enable_realtime: false,
+            audio_device: None,
+            output_device: None,
+            realtime_audio_device: None,
+            deepgram_api_key: None,
+            ..Default::default()
+        }
+    }
+
     pub fn base_url(&self) -> String {
         format!("http://localhost:{}", self.port)
     }
@@ -60,6 +78,13 @@ impl ScreenpipeConfig {
 
     pub fn to_args(&self) -> Vec<String> {
         let mut args = Vec::new();
+
+        args.push("--port".to_string());
+        args.push(self.port.to_string());
+
+        if self.disable_audio {
+            args.push("--disable-audio".to_string());
+        }
 
         if let Some(ref device) = self.audio_device {
             args.push("--audio-device".to_string());
@@ -86,6 +111,7 @@ impl ScreenpipeConfig {
             TranscriptionEngine::WhisperLargeV3TurboQuantized => {
                 "whisper-large-v3-turbo-quantized".to_string()
             }
+            TranscriptionEngine::Disabled => "disabled".to_string(),
         });
 
         if let Some(ref key) = self.deepgram_api_key {
@@ -108,5 +134,29 @@ impl ScreenpipeConfig {
         args.push(self.audio_chunk_duration.to_string());
 
         args
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_port_is_passed_to_screenpipe() {
+        let mut config = ScreenpipeConfig::default();
+        config.port = 43111;
+        let args = config.to_args();
+        let index = args.iter().position(|arg| arg == "--port").unwrap();
+        assert_eq!(args.get(index + 1).map(String::as_str), Some("43111"));
+    }
+
+    #[test]
+    fn context_sidecar_is_vision_only() {
+        let config = ScreenpipeConfig::context_sidecar(43112);
+        let args = config.to_args();
+        assert!(args.iter().any(|arg| arg == "--disable-audio"));
+        let engine = args.iter().position(|arg| arg == "--audio-transcription-engine").unwrap();
+        assert_eq!(args.get(engine + 1).map(String::as_str), Some("disabled"));
+        assert!(!args.iter().any(|arg| arg == "--disable-vision"));
     }
 }

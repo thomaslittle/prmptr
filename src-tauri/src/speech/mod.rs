@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod commands;
+pub mod context_sidecar;
 pub mod deepgram;
 pub mod diagnostics;
 pub mod engines;

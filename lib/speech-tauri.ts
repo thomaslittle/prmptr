@@ -37,6 +37,14 @@ export interface MoonshineQualityResolution {
     reason: string;
 }
 
+export interface SpeechContextSidecarStatus {
+    running: boolean;
+    healthy: boolean;
+    port: number;
+    baseUrl: string;
+    message: string;
+}
+
 export interface SpeechStartConfig {
     input_device_name?: string | null;
     output_device_name?: string | null;
@@ -93,6 +101,18 @@ export function installMoonshineQualityProfile(
     profile: MoonshineQualityProfile = "auto"
 ): Promise<MoonshineVoiceModelStatus> {
     return invoke("install_moonshine_quality_profile", { profile });
+}
+
+export function startSpeechContextSidecar(): Promise<SpeechContextSidecarStatus> {
+    return invoke("start_speech_context_sidecar");
+}
+
+export function stopSpeechContextSidecar(): Promise<void> {
+    return invoke("stop_speech_context_sidecar");
+}
+
+export function getSpeechContextSidecarStatus(): Promise<SpeechContextSidecarStatus> {
+    return invoke("get_speech_context_sidecar_status");
 }
 
 export function startSpeechTranscription(config: SpeechStartConfig): Promise<void> {

@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
 
+use crate::speech::context_sidecar::SpeechContextSidecarStatus;
 use crate::speech::moonshine_quality::{
     self, MoonshineQualityOption, MoonshineQualityProfile, MoonshineQualityResolution,
 };
@@ -83,6 +84,21 @@ pub async fn set_speech_diarization_enabled(
     tokio::task::spawn_blocking(move || crate::speech::moonshine_stream::reconfigure_diarization(enabled))
         .await
         .map_err(|error| format!("Diarization reconfiguration task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn start_speech_context_sidecar() -> Result<SpeechContextSidecarStatus, String> {
+    crate::speech::context_sidecar::start().await
+}
+
+#[tauri::command]
+pub async fn stop_speech_context_sidecar() -> Result<(), String> {
+    crate::speech::context_sidecar::stop().await
+}
+
+#[tauri::command]
+pub async fn get_speech_context_sidecar_status() -> SpeechContextSidecarStatus {
+    crate::speech::context_sidecar::status().await
 }
 
 #[tauri::command]

@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { buildSpeechBiasContext } from "@/lib/speech-context";
-import { setSpeechContext, setSpeechKeyterms } from "@/lib/speech-tauri";
+import {
+    setSpeechContext,
+    setSpeechKeyterms,
+    startSpeechContextSidecar,
+    stopSpeechContextSidecar,
+} from "@/lib/speech-tauri";
 import {
     nativeTranscriptLineToTranscriptLine,
     onSpeechTranscriptLine,
@@ -13,6 +18,11 @@ import { useSpeechContextSourceStore } from "@/lib/stores/speech-context-source-
 import { useSpeechStore } from "@/lib/stores/speech-store";
 import { useTranscriptStore } from "@/lib/stores/transcript-store";
 import { transcriptLinesToFeedItems } from "@/lib/transcript";
+import type { FeedItem } from "@/lib/types";
+
+function desktopRuntime(): boolean {
+    return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
 export function useLocalTranscription() {
     const lines = useTranscriptStore((state) => state.lines);
@@ -20,6 +30,8 @@ export function useLocalTranscription() {
     const clear = useTranscriptStore((state) => state.clear);
     const ocrItems = useSpeechContextSourceStore((state) => state.ocrItems);
     const sessionContext = useSessionStore((state) => state.config.context);
+    const transcriptionMode = useSettingsStore((state) => state.settings.transcriptionMode ?? "local-whisper");
+    const localSttEngine = useSettingsStore((state) => state.settings.localSttEngine ?? "whisper");
     const preferences = useSpeechStore((state) => state.preferences);
     const lastBiasHash = useRef("");
 
@@ -50,11 +62,61 @@ export function useLocalTranscription() {
         };
     }, [upsertLine]);
 
+    const localMoonshineSelected =
+        transcriptionMode === "local-whisper" && localSttEngine === "moonshine";
+
+    // Run a dedicated vision-only Screenpipe sidecar while local Moonshine
+    // context biasing is enabled. This process has audio and STT disabled, so
+    // OCR remains available without creating a second speech pipeline or
+    // coupling the context source to the main Screenpipe transcription mode.
     useEffect(() => {
-        const settings = useSettingsStore.getState().settings;
-        const localMoonshineSelected =
-            (settings.transcriptionMode ?? "local-whisper") === "local-whisper"
-            && settings.localSttEngine === "moonshine";
+        if (!desktopRuntime() || !localMoonshineSelected || !preferences.contextBiasEnabled) return;
+
+        let eventSource: EventSource | null = null;
+        let disposed = false;
+        const start = async () => {
+            try {
+                const status = await startSpeechContextSidecar();
+                if (disposed || !status.running) return;
+                const params = new URLSearchParams({
+                    screenpipeUrl: status.baseUrl,
+                    images: "false",
+                });
+                eventSource = new EventSource(`/api/stream?${params}`);
+                eventSource.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data) as {
+                            type?: string;
+                            item?: FeedItem;
+                        };
+                        const item = data.type === "feed" ? data.item : undefined;
+                        if (item?.type === "ocr") {
+                            useSpeechContextSourceStore.getState().push(item);
+                        }
+                    } catch {
+                        // Ignore malformed sidecar events. Context is advisory;
+                        // transcription must stay healthy if OCR is unavailable.
+                    }
+                };
+                eventSource.onerror = () => {
+                    console.debug("[speech-context] OCR sidecar stream reconnecting");
+                };
+            } catch (error) {
+                console.warn("[speech-context] OCR sidecar unavailable:", error);
+            }
+        };
+        void start();
+
+        return () => {
+            disposed = true;
+            eventSource?.close();
+            void stopSpeechContextSidecar().catch((error) => {
+                console.debug("[speech-context] sidecar stop skipped:", error);
+            });
+        };
+    }, [localMoonshineSelected, preferences.contextBiasEnabled]);
+
+    useEffect(() => {
         if (!localMoonshineSelected || !preferences.contextBiasEnabled) return;
 
         const timer = window.setTimeout(() => {
@@ -70,9 +132,6 @@ export function useLocalTranscription() {
                 setSpeechKeyterms(bias.keyterms),
             ])
                 .then(() => {
-                    // Only suppress identical future updates after both native
-                    // calls succeeded. A pre-start failure must retry once the
-                    // stream becomes available.
                     lastBiasHash.current = hash;
                 })
                 .catch((error) => {
@@ -81,7 +140,7 @@ export function useLocalTranscription() {
                 });
         }, 650);
         return () => window.clearTimeout(timer);
-    }, [ocrItems, sessionContext, preferences, lines.length]);
+    }, [ocrItems, sessionContext, preferences, lines.length, localMoonshineSelected]);
 
     const items = useMemo(() => transcriptLinesToFeedItems(lines), [lines]);
     return { items, lines, clear };
