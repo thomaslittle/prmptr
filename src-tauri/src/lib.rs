@@ -90,6 +90,8 @@ pub fn run() {
             commands::set_deepgram_mute,
             transcription::speaker::get_speaker_diarization_enabled,
             transcription::speaker::set_speaker_diarization_enabled,
+            transcription::speaker::get_speech_detection_diagnostics,
+            transcription::speaker::reset_speech_detection_diagnostics,
             transcription::capabilities::get_speech_capabilities,
         ])
         .run(tauri::generate_context!())
