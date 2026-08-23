@@ -232,9 +232,18 @@ fn ensure_window(app: &tauri::AppHandle, config: &OverlayWindowConfig) -> Result
 }
 
 fn emit_runtime(app: &tauri::AppHandle, manager: &OverlayManager) {
+    emit_runtime_to(app, manager, true);
+}
+
+/// Broadcasts the runtime snapshot. `include_overlay` must be false while the
+/// overlay webview is being destroyed: evaluating into a webview from inside
+/// its own WM_DESTROY chain deadlocks WebView2 COM teardown on Windows.
+fn emit_runtime_to(app: &tauri::AppHandle, manager: &OverlayManager, include_overlay: bool) {
     let snapshot = manager.snapshot(app);
     let _ = app.emit_to("main", OVERLAY_RUNTIME_EVENT, &snapshot);
-    let _ = app.emit_to(OVERLAY_LABEL, OVERLAY_RUNTIME_EVENT, &snapshot);
+    if include_overlay {
+        let _ = app.emit_to(OVERLAY_LABEL, OVERLAY_RUNTIME_EVENT, &snapshot);
+    }
 }
 
 fn apply_window_config(window: &tauri::WebviewWindow, next: &OverlayWindowConfig, previous: Option<&OverlayWindowConfig>) -> Result<(), String> {
@@ -275,7 +284,18 @@ pub async fn set_overlay_enabled(
         inner.config = config;
     } else {
         if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-            window.destroy().map_err(|error| format!("Unable to destroy overlay: {error}"))?;
+            // Windows: destroying a content-protected (WDA_EXCLUDEFROMCAPTURE)
+            // WebView2 deadlocks the main thread inside DWM/WebView2 teardown.
+            // Drop the display-affinity flag first, then destroy off the invoke
+            // stack so in-flight page work and this command's runtime broadcast
+            // settle before WM_DESTROY runs.
+            if capture_protection_supported() {
+                let _ = window.set_content_protected(false);
+            }
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                let _ = window.destroy();
+            });
         }
         let mut inner = manager.inner.lock().map_err(|_| "Overlay state is unavailable".to_string())?;
         inner.enabled = false;
@@ -414,7 +434,8 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &tauri::W
         }
         tauri::WindowEvent::Destroyed => {
             manager.mark_destroyed();
-            emit_runtime(app, &manager);
+            // The overlay webview is gone or dying; never evaluate into it here.
+            emit_runtime_to(app, &manager, false);
         }
         _ => {}
     }
