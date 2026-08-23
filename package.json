@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "speech:benchmark": "node scripts/speech-benchmark.mjs",
+    "speech:benchmark:compare": "node scripts/speech-benchmark-compare.mjs",
+    "speech:benchmark:test": "node scripts/speech-benchmark.test.mjs && node scripts/speech-benchmark-compare.test.mjs",
     "speech:moonshine:lock-check": "node scripts/check-moonshine-lock.mjs",
     "tauri": "tauri",
     "tauri:dev:gpu": "tauri dev --features cuda"
