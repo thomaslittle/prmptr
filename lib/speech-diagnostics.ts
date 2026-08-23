@@ -1,5 +1,11 @@
 import type { SpeechCapabilities } from "@/lib/speech-capabilities";
-import type { MoonshineVoiceModelStatus, MoonshineVoiceSupport } from "@/lib/speech-tauri";
+import type {
+    MoonshineModelCatalogEntry,
+    MoonshineQualityResolution,
+    MoonshineVoiceModelStatus,
+    MoonshineVoiceSupport,
+    SpeechContextSidecarStatus,
+} from "@/lib/speech-tauri";
 
 export interface SpeechDetectionDiagnostics {
     diarizationEnabled: boolean;
@@ -39,6 +45,9 @@ export interface SpeechDiagnosticBundle {
     deepgramAudio: RuntimeAudioDiagnostics;
     moonshineVoice: MoonshineVoiceSupport;
     moonshineDefaultModel?: MoonshineVoiceModelStatus | null;
+    moonshineAutoResolution: MoonshineQualityResolution;
+    moonshineModels: MoonshineModelCatalogEntry[];
+    contextSidecar: SpeechContextSidecarStatus;
     rawAudioRetained: boolean;
     privacyNote: string;
 }

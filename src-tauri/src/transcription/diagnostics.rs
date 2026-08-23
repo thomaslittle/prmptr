@@ -6,7 +6,12 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::speech::audio::metrics::AudioPipelineSnapshot;
+use crate::speech::context_sidecar::SpeechContextSidecarStatus;
 use crate::speech::deepgram::DirectDeepgramStreamManager;
+use crate::speech::moonshine_models::MoonshineModelCatalogEntry;
+use crate::speech::moonshine_quality::{
+    self, MoonshineQualityProfile, MoonshineQualityResolution,
+};
 use crate::speech::moonshine_voice::{
     self, MoonshineVoiceArch, MoonshineVoiceModelStatus, MoonshineVoiceSupport,
 };
@@ -34,6 +39,9 @@ pub struct SpeechDiagnosticBundle {
     pub deepgram_audio: RuntimeAudioDiagnostics,
     pub moonshine_voice: MoonshineVoiceSupport,
     pub moonshine_default_model: Option<MoonshineVoiceModelStatus>,
+    pub moonshine_auto_resolution: MoonshineQualityResolution,
+    pub moonshine_models: Vec<MoonshineModelCatalogEntry>,
+    pub context_sidecar: SpeechContextSidecarStatus,
     pub raw_audio_retained: bool,
     pub privacy_note: &'static str,
 }
@@ -44,9 +52,12 @@ fn build_bundle(
     deepgram_running: bool,
     deepgram_pipeline: AudioPipelineSnapshot,
     moonshine_default_model: Option<MoonshineVoiceModelStatus>,
+    moonshine_auto_resolution: MoonshineQualityResolution,
+    moonshine_models: Vec<MoonshineModelCatalogEntry>,
+    context_sidecar: SpeechContextSidecarStatus,
 ) -> SpeechDiagnosticBundle {
     SpeechDiagnosticBundle {
-        schema_version: 3,
+        schema_version: 4,
         generated_at: Utc::now().to_rfc3339(),
         app_version: env!("CARGO_PKG_VERSION"),
         capabilities: get_speech_capabilities(),
@@ -61,8 +72,11 @@ fn build_bundle(
         },
         moonshine_voice: moonshine_voice::support(),
         moonshine_default_model,
+        moonshine_auto_resolution,
+        moonshine_models,
+        context_sidecar,
         raw_audio_retained: false,
-        privacy_note: "This diagnostic bundle contains counters, capability metadata, and model-integrity status only; raw audio is not retained by this command.",
+        privacy_note: "This diagnostic bundle contains counters, capability metadata, model-integrity state, quality resolution, and OCR-sidecar health only; raw audio is not retained by this command.",
     }
 }
 
@@ -72,14 +86,26 @@ pub async fn get_speech_diagnostic_bundle(
     speech: State<'_, Arc<Mutex<SpeechStreamManager>>>,
     deepgram: State<'_, Arc<Mutex<DirectDeepgramStreamManager>>>,
 ) -> SpeechDiagnosticBundle {
-    let speech = speech.lock().await;
-    let deepgram = deepgram.lock().await;
+    let (local_running, local_pipeline) = {
+        let speech = speech.lock().await;
+        (speech.is_running(), speech.audio_metrics())
+    };
+    let (deepgram_running, deepgram_pipeline) = {
+        let deepgram = deepgram.lock().await;
+        (deepgram.is_running(), deepgram.audio_metrics())
+    };
+    let auto = moonshine_quality::resolve(MoonshineQualityProfile::Auto);
+    let models = crate::speech::moonshine_models::catalog(&app).unwrap_or_default();
+    let sidecar = crate::speech::context_sidecar::status().await;
     build_bundle(
-        speech.is_running(),
-        speech.audio_metrics(),
-        deepgram.is_running(),
-        deepgram.audio_metrics(),
+        local_running,
+        local_pipeline,
+        deepgram_running,
+        deepgram_pipeline,
         moonshine_voice::model_status(&app, MoonshineVoiceArch::default()).ok(),
+        auto,
+        models,
+        sidecar,
     )
 }
 
@@ -95,11 +121,22 @@ mod tests {
             false,
             AudioPipelineSnapshot::default(),
             None,
+            moonshine_quality::resolve_for_cpu_count(MoonshineQualityProfile::Auto, 8),
+            Vec::new(),
+            SpeechContextSidecarStatus {
+                running: false,
+                healthy: false,
+                port: crate::speech::context_sidecar::SPEECH_CONTEXT_SIDECAR_PORT,
+                base_url: "http://localhost:43112".to_string(),
+                message: "not running".to_string(),
+            },
         );
-        assert_eq!(bundle.schema_version, 3);
+        assert_eq!(bundle.schema_version, 4);
         assert!(bundle.local_audio.running);
         assert!(!bundle.deepgram_audio.running);
         assert!(!bundle.raw_audio_retained);
+        assert_eq!(bundle.moonshine_auto_resolution.arch, MoonshineVoiceArch::MediumStreaming);
+        assert!(!bundle.context_sidecar.running);
         assert!(!bundle.app_version.is_empty());
     }
 }
