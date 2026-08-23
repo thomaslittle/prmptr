@@ -1,3 +1,5 @@
+import type { SpeechCapabilities } from "@/lib/speech-capabilities";
+
 export interface SpeechDetectionDiagnostics {
     diarizationEnabled: boolean;
     vadSamplesAccepted: number;
@@ -8,6 +10,16 @@ export interface SpeechDetectionDiagnostics {
     diarizationTotalMs: number;
     diarizationAverageMs?: number | null;
     diarizationNewSpeakers: number;
+}
+
+export interface SpeechDiagnosticBundle {
+    schemaVersion: number;
+    generatedAt: string;
+    appVersion: string;
+    capabilities: SpeechCapabilities;
+    detection: SpeechDetectionDiagnostics;
+    rawAudioRetained: boolean;
+    privacyNote: string;
 }
 
 function isDesktopRuntime(): boolean {
@@ -36,4 +48,10 @@ export async function resetSpeechDetectionDiagnostics(): Promise<SpeechDetection
     if (!isDesktopRuntime()) return { ...EMPTY_DIAGNOSTICS };
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<SpeechDetectionDiagnostics>("reset_speech_detection_diagnostics");
+}
+
+export async function getSpeechDiagnosticBundle(): Promise<SpeechDiagnosticBundle | null> {
+    if (!isDesktopRuntime()) return null;
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<SpeechDiagnosticBundle>("get_speech_diagnostic_bundle");
 }

@@ -93,6 +93,7 @@ pub fn run() {
             transcription::speaker::get_speech_detection_diagnostics,
             transcription::speaker::reset_speech_detection_diagnostics,
             transcription::capabilities::get_speech_capabilities,
+            transcription::diagnostics::get_speech_diagnostic_bundle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

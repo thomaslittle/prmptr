@@ -1,5 +1,6 @@
 pub mod canonical;
 pub mod capabilities;
+pub mod diagnostics;
 pub mod filter;
 pub mod transcript;
 pub mod whisper_stream;
