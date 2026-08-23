@@ -1,9 +1,15 @@
 "use client";
 
-import { memo, useRef, useEffect } from "react";
+import { memo, useRef, useEffect, useState } from "react";
 import { FeedItem } from "@/lib/types";
 import { Waveform, Monitor, Microphone, CaretLeft } from "@phosphor-icons/react";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import {
+    getSpeakerDiarizationPreference,
+    setSpeakerDiarizationPreference,
+    syncSpeakerDiarizationPreference,
+} from "@/lib/speaker-diarization";
+import { isTauri } from "@/lib/tauri";
 
 interface LiveFeedProps {
     items: FeedItem[];
@@ -46,12 +52,40 @@ export default memo(function LiveFeed({
     onCollapse,
 }: LiveFeedProps) {
     const bodyRef = useRef<HTMLDivElement>(null);
+    const [diarizationEnabled, setDiarizationEnabled] = useState(true);
+    const [diarizationBusy, setDiarizationBusy] = useState(false);
+    const desktopRuntime = isTauri();
 
     useEffect(() => {
         if (bodyRef.current && items.length > 0) {
             bodyRef.current.scrollTop = 0;
         }
     }, [items.length]);
+
+    useEffect(() => {
+        if (!desktopRuntime) return;
+        const enabled = getSpeakerDiarizationPreference();
+        setDiarizationEnabled(enabled);
+        syncSpeakerDiarizationPreference(enabled).catch((err) => {
+            console.warn("Failed to sync speaker diarization preference", err);
+        });
+    }, [desktopRuntime]);
+
+    const toggleDiarization = async () => {
+        if (diarizationBusy) return;
+        const previous = diarizationEnabled;
+        const next = !previous;
+        setDiarizationEnabled(next);
+        setDiarizationBusy(true);
+        try {
+            await setSpeakerDiarizationPreference(next);
+        } catch (err) {
+            setDiarizationEnabled(previous);
+            console.warn("Failed to update speaker diarization", err);
+        } finally {
+            setDiarizationBusy(false);
+        }
+    };
 
     return (
         <div className="flex flex-col min-h-0 flex-1">
@@ -61,6 +95,19 @@ export default memo(function LiveFeed({
                     <span className="text-xs font-medium text-foreground/80">Feed</span>
                 </div>
                 <div className="flex items-center gap-2">
+                    {desktopRuntime && (
+                        <button
+                            type="button"
+                            aria-pressed={diarizationEnabled}
+                            disabled={diarizationBusy}
+                            onClick={toggleDiarization}
+                            className="flex items-center gap-1.5 rounded-sm border border-border/80 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:opacity-50 transition-colors cursor-pointer"
+                            title="Separate system-audio transcript lines by detected speaker. Enabled by default; disable to reduce speaker-embedding work."
+                        >
+                            <span className={`size-1 rounded-full ${diarizationEnabled ? "bg-emerald-400" : "bg-muted-foreground/40"}`} />
+                            Speakers {diarizationEnabled ? "on" : "off"}
+                        </button>
+                    )}
                     {isPolling && (
                         <div className="flex items-center gap-1.5">
                             <span className="size-1 rounded-full bg-emerald-400 status-pulse" />
@@ -112,12 +159,12 @@ export default memo(function LiveFeed({
 
                                     {item.type === "audio" && (item.deviceType === "input" || sourceMatchesDevice(item.source, inputDevice)) && (
                                         <span className="text-[9px] text-primary/70 font-medium uppercase tracking-wider">
-                                            {item.speaker != null && item.speaker > 1 ? `You (Speaker ${item.speaker})` : "You"}
+                                            You
                                         </span>
                                     )}
                                     {item.type === "audio" && (item.deviceType === "output" || sourceMatchesDevice(item.source, outputDevice)) && (
                                         <span className={`text-[9px] font-medium uppercase tracking-wider ${speakerColor(item.speaker)}`}>
-                                            {item.speakerLabel ?? "Them"}
+                                            {item.speakerLabel ?? (item.speaker != null ? `Speaker ${item.speaker}` : "Them")}
                                         </span>
                                     )}
 

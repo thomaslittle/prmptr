@@ -90,6 +90,8 @@ pub fn run() {
             commands::update_direct_deepgram_transcription,
             commands::stop_direct_deepgram_transcription,
             commands::set_deepgram_mute,
+            transcription::speaker::get_speaker_diarization_enabled,
+            transcription::speaker::set_speaker_diarization_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

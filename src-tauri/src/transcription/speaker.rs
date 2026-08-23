@@ -1,6 +1,25 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use sherpa_rs::embedding_manager::EmbeddingManager;
 use sherpa_rs::silero_vad::{SileroVad, SileroVadConfig, SpeechSegment};
 use sherpa_rs::speaker_id::{EmbeddingExtractor, ExtractorConfig, DEFAULT_SIMILARITY_THRESHOLD};
+
+/// Diarization is intentionally on by default. The flag is process-wide so a
+/// preference change can take effect on already-running local transcription
+/// streams without tearing down audio capture or STT inference.
+static SPEAKER_DIARIZATION_ENABLED: AtomicBool = AtomicBool::new(true);
+
+#[tauri::command]
+pub fn get_speaker_diarization_enabled() -> bool {
+    SPEAKER_DIARIZATION_ENABLED.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+pub fn set_speaker_diarization_enabled(enabled: bool) -> bool {
+    SPEAKER_DIARIZATION_ENABLED.store(enabled, Ordering::Relaxed);
+    log::info!("Speaker diarization {}", if enabled { "enabled" } else { "disabled" });
+    enabled
+}
 
 /// Wraps Silero VAD for streaming speech detection.
 pub struct SpeechDetector {
@@ -89,6 +108,13 @@ impl SpeakerTracker {
 
     /// Extract a voice embedding from audio and identify (or register) the speaker.
     pub fn identify_speaker(&mut self, audio: &[f32], sample_rate: u32) -> Option<SpeakerResult> {
+        // This check lives immediately before embedding inference so disabling
+        // diarization removes its recurring compute cost live, even if the
+        // speaker model was already initialized for the session.
+        if !SPEAKER_DIARIZATION_ENABLED.load(Ordering::Relaxed) {
+            return None;
+        }
+
         let mut embedding = match self
             .extractor
             .compute_speaker_embedding(audio.to_vec(), sample_rate)

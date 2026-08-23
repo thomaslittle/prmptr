@@ -58,7 +58,7 @@ async function loadSessionSummaries(): Promise<SessionSummary[]> {
     summaries.sort((a, b) => {
         if (a.starred && !b.starred) return -1;
         if (!a.starred && b.starred) return 1;
-        return 0; // preserve updatedAt order within each group
+        return 0;
     });
     return summaries;
 }
@@ -110,15 +110,12 @@ export function useSessionHistory() {
                 .reverse()
                 .sortBy("timestamp");
 
-            // sortBy returns ascending; we reversed the collection but sortBy
-            // overrides, so sort descending manually
             responses.sort((a, b) => (b.timestamp > a.timestamp ? 1 : -1));
 
             const feedRows = await db.feedItems
                 .where("sessionId")
                 .equals(id)
                 .sortBy("timestamp");
-            // newest first
             feedRows.sort((a, b) => (b.timestamp > a.timestamp ? 1 : -1));
 
             return {
@@ -164,7 +161,6 @@ export function useSessionHistory() {
             await db.sessions.update(sessionId, {
                 updatedAt: new Date().toISOString(),
             });
-            // intentionally no refreshList here for perf
         },
         []
     );
@@ -222,7 +218,7 @@ export function useSessionHistory() {
             await db.sessions.update(id, { starred });
             await refreshList();
         },
-        []
+        [refreshList]
     );
 
     const renameSession = useCallback(
@@ -230,7 +226,7 @@ export function useSessionHistory() {
             await db.sessions.update(id, { title });
             await refreshList();
         },
-        []
+        [refreshList]
     );
 
     return {
