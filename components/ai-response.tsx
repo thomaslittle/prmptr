@@ -553,6 +553,21 @@ export default function AiResponse({
     const [lightboxImage, setLightboxImage] = useState<string | null>(null);
     const rateLimitedUntilRef = useRef(0);
     const devicesRef = useRef(devices);
+
+    // AiResponse remains the only LLM stream owner. Mirror its existing local
+    // presentation state so optional consumers (the overlay today, other local
+    // surfaces later) observe the same stream without issuing another request.
+    useEffect(() => {
+        useSessionStore.getState().setCurrentResponse(currentResponse);
+    }, [currentResponse]);
+    useEffect(() => {
+        useSessionStore.getState().setIsStreaming(isStreaming);
+    }, [isStreaming]);
+    useEffect(() => () => {
+        useSessionStore.getState().setCurrentResponse("");
+        useSessionStore.getState().setIsStreaming(false);
+    }, []);
+
     useEffect(() => {
         devicesRef.current = devices;
     }, [devices]);
