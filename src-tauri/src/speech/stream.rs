@@ -21,6 +21,7 @@ use crate::transcription::transcript::{TranscriptBuffer, TranscriptEntry};
 
 const HISTORY_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize * 15;
 const LEAD_IN_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize * 600 / 1000;
+const ZERO_GAP_BLOCK: usize = SPEECH_SAMPLE_RATE as usize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalSpeechConfig {
@@ -77,7 +78,7 @@ impl TrackInferenceState {
         })
     }
 
-    fn feed(&mut self, samples: &[f32]) {
+    fn feed_samples(&mut self, samples: &[f32]) {
         self.recent_history.extend_from_slice(samples);
         if self.recent_history.len() > HISTORY_SAMPLES {
             let remove = self.recent_history.len() - HISTORY_SAMPLES;
@@ -85,6 +86,27 @@ impl TrackInferenceState {
         }
         self.vad.accept_waveform(samples);
         self.vad_fed_total = self.vad_fed_total.saturating_add(samples.len() as u64);
+    }
+
+    /// Preserve the capture sample clock even when bounded-queue backpressure
+    /// drops chunks. Missing capture time becomes silence rather than causing
+    /// every later transcript timestamp to drift earlier than reality.
+    fn feed_chunk(&mut self, chunk: &AudioChunk) {
+        let mut gap = chunk.start_sample.saturating_sub(self.vad_fed_total);
+        if gap > 0 {
+            log::warn!(
+                "[{}] inserting {} dropped samples as silence to preserve audio clock",
+                chunk.track.as_str(),
+                gap
+            );
+            let zero_block = vec![0.0; ZERO_GAP_BLOCK];
+            while gap > 0 {
+                let count = (gap as usize).min(ZERO_GAP_BLOCK);
+                self.feed_samples(&zero_block[..count]);
+                gap -= count as u64;
+            }
+        }
+        self.feed_samples(&chunk.samples);
     }
 
     fn with_lead_in(&self, segment_start_raw: i32, samples: &[f32]) -> (Vec<f32>, u64) {
@@ -198,7 +220,6 @@ impl SpeechStreamManager {
 
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
         let worker_app = app.clone();
-        let worker_running = running.clone();
         let worker_config = config.clone();
         let worker = std::thread::spawn(move || {
             let vad_path = match crate::transcription::model_manager::resolve_vad_model_path(&worker_app) {
@@ -264,9 +285,6 @@ impl SpeechStreamManager {
             );
 
             while let Some(chunk) = rx.blocking_recv() {
-                if !worker_running.load(Ordering::Relaxed) {
-                    break;
-                }
                 if let Some(state) = states.get_mut(&chunk.track) {
                     process_chunk(
                         &worker_app,
@@ -295,11 +313,13 @@ impl SpeechStreamManager {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 running.store(false, Ordering::Relaxed);
+                drop(tx);
                 let _ = worker.join();
                 return Err(error);
             }
             Err(error) => {
                 running.store(false, Ordering::Relaxed);
+                drop(tx);
                 let _ = worker.join();
                 return Err(format!("Timed out initializing speech engine: {error}"));
             }
@@ -384,7 +404,7 @@ fn process_chunk(
     state: &mut TrackInferenceState,
     engine: &mut dyn SpeechEngine,
 ) {
-    state.feed(&chunk.samples);
+    state.feed_chunk(&chunk);
     drain_segments(app, transcript_buffer, chunk.track, state, engine);
 }
 

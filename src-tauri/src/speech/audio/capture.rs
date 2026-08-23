@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -34,35 +34,17 @@ fn resolve_device(spec: &CaptureSpec) -> Result<cpal::Device, String> {
             if let Some(ref name) = wanted {
                 host.input_devices()
                     .map_err(|e| format!("Failed to enumerate input devices: {e}"))?
-                    .find(|device| {
-                        device
-                            .name()
-                            .map(|candidate| candidate.eq_ignore_ascii_case(name))
-                            .unwrap_or(false)
-                    })
+                    .find(|device| platform::device_matches(device, name))
             } else {
                 host.default_input_device()
             }
         }
-        AudioTrackId::System => {
-            if let Some(ref name) = wanted {
-                host.output_devices()
-                    .map_err(|e| format!("Failed to enumerate output devices: {e}"))?
-                    .find(|device| {
-                        device
-                            .name()
-                            .map(|candidate| candidate.eq_ignore_ascii_case(name))
-                            .unwrap_or(false)
-                    })
-            } else {
-                host.default_output_device()
-            }
-        }
+        AudioTrackId::System => platform::resolve_system_device(&host, wanted.as_deref()),
     };
 
     device.ok_or_else(|| {
         format!(
-            "No {} device available{}",
+            "No {} capture device available{}",
             spec.track.as_str(),
             wanted
                 .as_ref()
@@ -72,26 +54,53 @@ fn resolve_device(spec: &CaptureSpec) -> Result<cpal::Device, String> {
     })
 }
 
-fn supported_config(device: &cpal::Device, track: AudioTrackId) -> Result<cpal::SupportedStreamConfig, String> {
+fn supported_config(
+    device: &cpal::Device,
+    track: AudioTrackId,
+) -> Result<cpal::SupportedStreamConfig, String> {
     match track {
         AudioTrackId::Mic => device
             .default_input_config()
             .map_err(|e| format!("Failed to read microphone format: {e}")),
+        AudioTrackId::System if platform::system_capture_uses_input_config() => device
+            .default_input_config()
+            .map_err(|e| format!("Failed to read system monitor format: {e}")),
         AudioTrackId::System => device
             .default_output_config()
             .map_err(|e| format!("Failed to read system-output format: {e}")),
     }
 }
 
+fn enqueue_chunk(
+    tx: &mpsc::Sender<AudioChunk>,
+    track: AudioTrackId,
+    start_sample: u64,
+    samples: Vec<f32>,
+    metrics: &AudioPipelineMetrics,
+) {
+    if samples.is_empty() {
+        return;
+    }
+    match tx.try_send(AudioChunk {
+        track,
+        start_sample,
+        samples,
+    }) {
+        Ok(()) => metrics.record_enqueued(),
+        Err(mpsc::error::TrySendError::Full(chunk)) => metrics.record_drop(chunk.samples.len()),
+        Err(mpsc::error::TrySendError::Closed(chunk)) => metrics.record_drop(chunk.samples.len()),
+    }
+}
+
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    channels: usize,
     conditioner: Arc<Mutex<StreamingAudioConditioner>>,
     spec: CaptureSpec,
     running: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
     level: Arc<Mutex<f32>>,
+    sample_clock: Arc<AtomicU64>,
     tx: mpsc::Sender<AudioChunk>,
     metrics: Arc<AudioPipelineMetrics>,
 ) -> Result<cpal::Stream, String>
@@ -99,7 +108,6 @@ where
     T: Sample + SizedSample + Copy + Send + 'static,
     f32: FromSample<T>,
 {
-    let mut sample_clock = 0u64;
     let error_metrics = metrics.clone();
     let label = spec.track.as_str();
 
@@ -148,19 +156,8 @@ where
                 }
 
                 metrics.record_conditioned_samples(conditioned.len());
-                let start_sample = sample_clock;
-                sample_clock = sample_clock.saturating_add(conditioned.len() as u64);
-                let count = conditioned.len();
-                match tx.try_send(AudioChunk {
-                    track: spec.track,
-                    start_sample,
-                    samples: conditioned,
-                }) {
-                    Ok(()) => metrics.record_enqueued(),
-                    Err(mpsc::error::TrySendError::Full(chunk)) => metrics.record_drop(chunk.samples.len()),
-                    Err(mpsc::error::TrySendError::Closed(chunk)) => metrics.record_drop(chunk.samples.len()),
-                }
-                debug_assert!(count > 0);
+                let start_sample = sample_clock.fetch_add(conditioned.len() as u64, Ordering::Relaxed);
+                enqueue_chunk(&tx, spec.track, start_sample, conditioned, &metrics);
             },
             move |error| {
                 error_metrics.record_capture_error();
@@ -213,6 +210,7 @@ pub fn spawn_capture_thread(
                 return;
             }
         };
+        let sample_clock = Arc::new(AtomicU64::new(0));
 
         log::info!(
             "[{label}] capture backend={} device='{}' format={:?} rate={}Hz channels={}",
@@ -224,16 +222,16 @@ pub fn spawn_capture_thread(
         );
 
         let stream = match sample_format {
-            SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::F64 => build_stream::<f64>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::I8 => build_stream::<i8>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::I64 => build_stream::<i64>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::U8 => build_stream::<u8>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::U32 => build_stream::<u32>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
-            SampleFormat::U64 => build_stream::<u64>(&device, &stream_config, channels, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::F64 => build_stream::<f64>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::I8 => build_stream::<i8>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::I64 => build_stream::<i64>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::U8 => build_stream::<u8>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::U32 => build_stream::<u32>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
+            SampleFormat::U64 => build_stream::<u64>(&device, &stream_config, conditioner.clone(), spec.clone(), running.clone(), muted.clone(), level.clone(), sample_clock.clone(), tx.clone(), metrics.clone()),
             other => Err(format!("Unsupported native audio sample format: {other:?}")),
         };
 
@@ -260,11 +258,8 @@ pub fn spawn_capture_thread(
             match guard.flush() {
                 Ok(tail) if !tail.is_empty() => {
                     metrics.record_conditioned_samples(tail.len());
-                    let _ = tx.try_send(AudioChunk {
-                        track: spec.track,
-                        start_sample: 0,
-                        samples: tail,
-                    });
+                    let start_sample = sample_clock.fetch_add(tail.len() as u64, Ordering::Relaxed);
+                    enqueue_chunk(&tx, spec.track, start_sample, tail, &metrics);
                 }
                 Ok(_) => {}
                 Err(error) => {
