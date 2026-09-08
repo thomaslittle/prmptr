@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTauri } from "@/lib/tauri";
 import {
     applyOverlayConfig,
@@ -37,8 +37,12 @@ export default function OverlayFeatureController() {
     const [isPreviewing, setIsPreviewing] = useState(false);
     // SSR renders null; the desktop-only control tree must only appear after
     // mount or the Tauri webview hydrates against mismatched HTML.
-    const [mounted, setMounted] = useState(false);
-    useEffect(() => setMounted(true), []);
+    // useSyncExternalStore (not a setState-in-effect) keeps the linter happy.
+    const mounted = useSyncExternalStore(
+        () => () => {},
+        () => true,
+        () => false
+    );
     const desktopRuntime = isTauri();
     const nativeConfig = useMemo(() => overlayWindowConfig(preferences), [preferences]);
 
@@ -289,15 +293,15 @@ export default function OverlayFeatureController() {
                     </div>
                     <label className="mb-2 block text-[9px] uppercase tracking-wider text-muted-foreground">
                         Opacity {Math.round(preferences.opacity * 100)}%
-                        <input className="mt-1 w-full" type="range" min="45" max="100" value={Math.round(preferences.opacity * 100)} onChange={(e) => updatePreferences({ opacity: Number(e.target.value) / 100 })} />
+                        <input className="mt-1 h-0.5 w-full accent-primary" type="range" min="45" max="100" value={Math.round(preferences.opacity * 100)} onChange={(e) => updatePreferences({ opacity: Number(e.target.value) / 100 })} />
                     </label>
                     <label className="mb-2 block text-[9px] uppercase tracking-wider text-muted-foreground">
                         Text size {Math.round(preferences.fontScale * 100)}%
-                        <input className="mt-1 w-full" type="range" min="80" max="150" value={Math.round(preferences.fontScale * 100)} onChange={(e) => updatePreferences({ fontScale: Number(e.target.value) / 100 })} />
+                        <input className="mt-1 h-0.5 w-full accent-primary" type="range" min="80" max="150" value={Math.round(preferences.fontScale * 100)} onChange={(e) => updatePreferences({ fontScale: Number(e.target.value) / 100 })} />
                     </label>
                     <label className="mb-3 block text-[9px] uppercase tracking-wider text-muted-foreground">
                         Recent responses {preferences.maxResponses}
-                        <input className="mt-1 w-full" type="range" min="1" max="8" value={preferences.maxResponses} onChange={(e) => updatePreferences({ maxResponses: Number(e.target.value) })} />
+                        <input className="mt-1 h-0.5 w-full accent-primary" type="range" min="1" max="8" value={preferences.maxResponses} onChange={(e) => updatePreferences({ maxResponses: Number(e.target.value) })} />
                     </label>
                     <div className="grid grid-cols-2 gap-1.5 text-[10px]">
                         <button type="button" onClick={() => updatePreferences({ autoShowOnResponse: !preferences.autoShowOnResponse })} className={`rounded border px-2 py-1.5 ${preferences.autoShowOnResponse ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>Auto-show {preferences.autoShowOnResponse ? "on" : "off"}</button>

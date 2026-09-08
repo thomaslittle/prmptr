@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useRef, useEffect, useState } from "react";
+import { memo, useRef, useEffect, useState, useSyncExternalStore } from "react";
 import { FeedItem } from "@/lib/types";
 import { Waveform, Monitor, Microphone, CaretLeft, Warning } from "@phosphor-icons/react";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
@@ -66,8 +66,11 @@ export default memo(function LiveFeed({
     const setSpeakerAlias = useSpeakerAliasStore((state) => state.setAlias);
     // SSR must match the first client render: gate desktop-only UI on a
     // post-mount flag instead of branching on isTauri() during render.
-    const [desktopMounted, setDesktopMounted] = useState(false);
-    useEffect(() => setDesktopMounted(true), []);
+    const desktopMounted = useSyncExternalStore(
+        () => () => {},
+        () => true,
+        () => false
+    );
     const desktopRuntime = isTauri();
 
     useEffect(() => {
