@@ -13,6 +13,8 @@ const ZEN_MODEL_NAME_OVERRIDES: Record<string, string> = {
     "nemotron-3.5-lightning-free": "Nemotron 3.5 Lightning Free",
     "muse-spark-1.2-contributor-free": "Muse Spark 1.2 Contributor Free",
     "muse-spark-1.2": "Muse Spark 1.2",
+    "muse-spark-1.3-contributor-free": "Muse Spark 1.3 Contributor Free",
+    "muse-spark-1.3": "Muse Spark 1.3",
     "grok-build-0.1": "Grok Build 0.1",
 };
 

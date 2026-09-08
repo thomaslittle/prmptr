@@ -104,9 +104,34 @@ function extractVersion(id: string): { major: number; minor: number } | null {
 }
 
 /**
- * Current/legacy split for a provider's models. A model is "legacy" if its
- * version is below the provider's newest version family (or below a configured
- * current-gen floor). Matches t3chat's "Legacy models" collapsible section.
+ * Model family: the leading non-version tokens of an id. Version counters
+ * are only comparable within one family — "muse-spark-1.3" is not an older
+ * generation of "gpt-5.6", so cross-family comparisons must not decide
+ * legacy status.
+ *
+ * - "muse-spark-1.3-contributor-free" → "muse-spark"
+ * - "gpt-5.6-sol" → "gpt"
+ * - "llama-3.3-70b-versatile" → "llama"
+ * - "grok-build-0.1" → "grok-build"
+ */
+function extractFamily(id: string): string {
+    const tokens = id.trim().toLowerCase().split(/[-_]/);
+    const head: string[] = [];
+    for (const token of tokens) {
+        // Stop at the first version-like token ("4", "5.6", "v2", "70b").
+        if (/^(v?\d)/i.test(token)) break;
+        head.push(token);
+    }
+    return head.length > 0 ? head.join("-") : id.trim().toLowerCase();
+}
+
+/**
+ * Current/legacy split for a provider's models. A model is "legacy" only
+ * when an older version exists *within its own family* (same leading
+ * non-version tokens). Comparing raw version numbers across families is
+ * meaningless — e.g. "muse-spark-1.3" must stay current next to "gpt-5.6",
+ * while "gpt-5.4" is legacy next to "gpt-5.6". Matches t3chat's "Legacy
+ * models" collapsible section.
  */
 export interface ModelVersionInfo {
     version: { major: number; minor: number } | null;
@@ -130,6 +155,7 @@ export function modelVersionInfo(id: string, provider: LLMProvider, siblings: re
     }
 
     const siblingVersions = siblings
+        .filter((sibling) => extractFamily(sibling) === extractFamily(id))
         .map(extractVersion)
         .filter((v): v is { major: number; minor: number } => !!v);
     if (siblingVersions.length === 0) return { version, isLegacy: false };
