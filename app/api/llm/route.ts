@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { streamLLMResponse } from "@/lib/llm-providers";
+import { LlmRequestError } from "@/lib/llm-errors";
 import { LLMProvider } from "@/lib/types";
 import { isCliSubscriptionProvider, CliSubscriptionId } from "@/lib/cli-providers";
 import { resolveCliCredential, resolveCliCredentialForSubProvider } from "@/lib/cli-providers-server";
@@ -165,10 +166,29 @@ export async function POST(request: NextRequest) {
                     }
                 } catch (error) {
                     if (!closed) {
+                        // Forward structured provider-error detail when
+                        // available; `message` stays for backward compatibility.
+                        const info =
+                            error instanceof LlmRequestError ? error.info : undefined;
                         const errorMsg =
                             error instanceof Error ? error.message : "Unknown error";
                         safeEnqueue(
-                            `data: ${JSON.stringify({ type: "error", message: errorMsg })}\n\n`
+                            `data: ${JSON.stringify({
+                                type: "error",
+                                message: errorMsg,
+                                ...(info
+                                    ? {
+                                          kind: info.kind,
+                                          title: info.title,
+                                          detail: info.detail,
+                                          action: info.action,
+                                          code: info.code,
+                                          status: info.status,
+                                          retryAfterMs: info.retryAfterMs,
+                                          providerMessage: info.providerMessage,
+                                      }
+                                    : {}),
+                            })}\n\n`
                         );
                     }
                 } finally {

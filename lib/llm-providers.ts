@@ -1,4 +1,11 @@
 import { LLMProvider, LLMRequest } from "./types";
+import {
+    LlmRequestError,
+    classifyProviderError,
+    isAbortLike,
+    isNetworkFailure,
+    throwClassifiedProviderError,
+} from "./llm-errors";
 
 function extractOpenAIContent(payload: unknown): string {
     const p = payload as
@@ -93,7 +100,13 @@ async function* streamAnthropicResponse(
 
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
+        throwClassifiedProviderError({
+            provider: request.provider,
+            model: request.model,
+            status: response.status,
+            bodyText: errorText,
+            retryAfterHeader: response.headers.get("retry-after"),
+        });
     }
 
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
@@ -191,14 +204,21 @@ async function* streamOpenAICompatibleResponse(
 
     if (!response.ok) {
         const errorText = await response.text();
-        if (response.status === 401 && isZenFamily) {
-            throw new Error(
-                "OpenCode Zen rejected the API key (401 Invalid API key). " +
-                    'Your saved Zen key looks stale — models under the "OpenCode" group use your CLI login instead; ' +
-                    "otherwise re-run `opencode auth login` or paste a fresh key from console.opencode.ai."
-            );
-        }
-        throw new Error(`API error ${response.status}: ${errorText}`);
+        throwClassifiedProviderError({
+            provider: request.provider,
+            model: request.model,
+            status: response.status,
+            bodyText: errorText,
+            retryAfterHeader: response.headers.get("retry-after"),
+            ...(response.status === 401 && isZenFamily
+                ? {
+                      actionOverride:
+                          "OpenCode Zen rejected the API key (401 Invalid API key). " +
+                          'Your saved Zen key looks stale — models under the "OpenCode" group use your CLI login instead; ' +
+                          "otherwise re-run `opencode auth login` or paste a fresh key from console.opencode.ai.",
+                  }
+                : {}),
+        });
     }
 
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
@@ -259,7 +279,13 @@ async function* streamOpenAICompatibleResponse(
 
         if (!nonStreamResponse.ok) {
             const errorText = await nonStreamResponse.text().catch(() => "");
-            throw new Error(`API fallback error ${nonStreamResponse.status}: ${errorText}`);
+            throwClassifiedProviderError({
+                provider: request.provider,
+                model: request.model,
+                status: nonStreamResponse.status,
+                bodyText: errorText,
+                retryAfterHeader: nonStreamResponse.headers.get("retry-after"),
+            });
         }
 
         const data = await nonStreamResponse.json().catch(() => ({}));
@@ -317,7 +343,13 @@ async function* streamCodexCliResponse(
 
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Codex API error ${response.status}: ${errorText}`);
+        throwClassifiedProviderError({
+            provider: request.provider,
+            model: request.model,
+            status: response.status,
+            bodyText: errorText,
+            retryAfterHeader: response.headers.get("retry-after"),
+        });
     }
 
     const reader = response.body?.getReader();
@@ -354,11 +386,17 @@ async function* streamCodexCliResponse(
             if (parsed.type === "response.output_text.delta" && parsed.delta) {
                 yield parsed.delta;
             } else if (parsed.type === "response.failed") {
-                throw new Error(
-                    parsed.response?.error?.message || "Codex request failed"
-                );
+                throwClassifiedProviderError({
+                    provider: request.provider,
+                    model: request.model,
+                    bodyText: parsed.response?.error?.message || "Codex request failed",
+                });
             } else if (parsed.type === "error") {
-                throw new Error(parsed.message || "Codex stream error");
+                throwClassifiedProviderError({
+                    provider: request.provider,
+                    model: request.model,
+                    bodyText: parsed.message || "Codex stream error",
+                });
             } else if (parsed.type === "response.completed") {
                 return;
             }
@@ -387,7 +425,8 @@ function getBaseUrl(provider: LLMProvider, customBaseUrl?: string): string {
 export async function* streamLLMResponse(
     request: LLMRequest
 ): AsyncGenerator<string> {
-    switch (request.provider) {
+    try {
+        switch (request.provider) {
         case "anthropic":
         case "claude-cli":
             yield* streamAnthropicResponse(request);
@@ -419,5 +458,42 @@ export async function* streamLLMResponse(
             break;
         default:
             throw new Error(`Unknown provider: ${request.provider}`);
+        }
+    } catch (error) {
+        // Already-classified provider errors pass through untouched. Raw
+        // transport failures (no HTTP response) become structured errors here
+        // so the analyzer can name the cause instead of dumping a stack.
+        if (error instanceof LlmRequestError) throw error;
+        if (isAbortLike(error)) {
+            throw new LlmRequestError(
+                classifyProviderError({
+                    provider: request.provider,
+                    model: request.model,
+                    bodyText: "request aborted or timed out",
+                })
+            );
+        }
+        if (isNetworkFailure(error)) {
+            const message = error instanceof Error ? error.message : "";
+            const baseUrl =
+                request.provider === "lmstudio" || request.provider === "zen" || request.provider === "opencode-cli"
+                    ? (() => {
+                          try {
+                              return getBaseUrl(request.provider, request.baseUrl);
+                          } catch {
+                              return undefined;
+                          }
+                      })()
+                    : undefined;
+            throw new LlmRequestError(
+                classifyProviderError({
+                    provider: request.provider,
+                    model: request.model,
+                    bodyText: message || "fetch failed",
+                    baseUrl,
+                })
+            );
+        }
+        throw error;
     }
 }

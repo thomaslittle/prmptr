@@ -18,6 +18,7 @@ import { selectBestSpokenLine } from "@/lib/spoken-line";
 import { normalizeGluedMarkdown } from "@/lib/markdown-normalize";
 import { isTauri, captureNativeScreenshotViaTauri } from "@/lib/tauri";
 import { isCliSubscriptionProvider, CliSubscriptionId } from "@/lib/cli-providers";
+import { LlmRequestError, classifyProviderError, toLlmErrorInfo } from "@/lib/llm-errors";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -173,7 +174,17 @@ async function streamFromLLMOnce(
                 retryAfterMs
             );
         }
-        throw new Error(`LLM request failed (${response.status}): ${errorText || response.statusText}`);
+        // Classify locally with the request's provider/model so the analyzer
+        // can name the cause instead of dumping a raw status + body.
+        throw new LlmRequestError(
+            classifyProviderError({
+                provider: String(body.provider ?? "unknown"),
+                model: typeof body.model === "string" ? body.model : undefined,
+                status: response.status,
+                bodyText: errorText || response.statusText,
+                retryAfterHeader: response.headers.get("retry-after"),
+            })
+        );
     }
 
     const reader = response.body?.getReader();
@@ -201,7 +212,7 @@ async function streamFromLLMOnce(
                     continue;
                 }
                 if (data.type === "error") {
-                    const msg: string = data.message || "";
+                    const msg: string = typeof data.message === "string" ? data.message : "";
                     if (isRateLimitMessage(msg)) {
                         const retryMatch = msg.match(/try again in ([\d.]+)s/i);
                         const retryMs = retryMatch
@@ -212,8 +223,19 @@ async function streamFromLLMOnce(
                             retryMs
                         );
                     }
-                    fullResponse += `\n\nError: ${msg}`;
-                    onToken(fullResponse);
+                    // Prefer the server's structured error info; otherwise
+                    // classify the message locally. Either way the analyzer
+                    // shows a named cause + action — an error must never be
+                    // stored as if it were an analysis answer.
+                    const serverInfo = toLlmErrorInfo(data);
+                    throw new LlmRequestError(
+                        serverInfo ??
+                            classifyProviderError({
+                                provider: String(body.provider ?? "unknown"),
+                                model: typeof body.model === "string" ? body.model : undefined,
+                                bodyText: msg,
+                            })
+                    );
                 }
             } catch (e) {
                 if (e instanceof RateLimitError) throw e;
@@ -862,6 +884,9 @@ export default function AiResponse({
                 setStatusMessage(`Rate limited — retrying in ${secs}s`);
             } else if (controller.signal.aborted) {
                 setCurrentResponse("Request timed out after 45s. Try again or switch models.");
+            } else if (err instanceof LlmRequestError) {
+                // Already a formatted title/detail/action triple.
+                setCurrentResponse(err.message);
             } else {
                 setCurrentResponse(
                     `Failed to get response: ${err instanceof Error ? err.message : "Unknown error"}`
@@ -1018,6 +1043,9 @@ export default function AiResponse({
                 setStatusMessage(`Rate limited — wait ${secs}s and try again`);
             } else if (controller.signal.aborted) {
                 setCurrentResponse("Request timed out after 45s. Try again or switch models.");
+            } else if (err instanceof LlmRequestError) {
+                // Already a formatted title/detail/action triple.
+                setCurrentResponse(err.message);
             } else {
                 setCurrentResponse(
                     `Failed to get response: ${err instanceof Error ? err.message : "Unknown error"}`
