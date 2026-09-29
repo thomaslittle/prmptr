@@ -228,3 +228,19 @@
     transform: none !important;
   }
 }
+
+/* App UI recreation — inherits the app's own tokens from globals.css, but the
+   landing page overrides the body font, so restore the app's typeface here. */
+.app-window {
+  font-family: var(--font-sans), ui-monospace, "JetBrains Mono", monospace;
+}
+
+@keyframes prmptr-eq {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+
+.prmptr-eq-bar {
+  transform-origin: bottom;
+  animation: prmptr-eq 0.85s ease-in-out var(--phase, 0s) infinite;
+}

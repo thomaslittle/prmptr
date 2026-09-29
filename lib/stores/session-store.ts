@@ -7,7 +7,7 @@ const DEFAULT_SESSION: SessionConfig = {
         "Listen to all audio — mic and system sound. Pay close attention to dialog and conversation. When you hear questions being asked, provide helpful answers. Summarize what's being discussed and offer relevant insights.",
     triggerMode: "auto",
     responseStyle: "concise",
-    personality: "roast",
+    personality: "general",
     autoIntervalSecs: 15,
     contextSize: 6000,
     model: "lmstudio-auto",

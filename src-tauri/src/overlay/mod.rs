@@ -440,14 +440,20 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &tauri::W
     let manager = app.state::<OverlayManager>();
     match event {
         tauri::WindowEvent::Moved(position) => {
+            // Windows: WM_MOVE fires continuously during a drag. Emitting into
+            // the overlay webview synchronously from inside its own message
+            // handler re-enters WebView2 COM and has crashed the process
+            // (exit code 0xffffffff). Persist state immediately — it only
+            // touches the manager mutex — but defer any runtime broadcast to
+            // a worker thread so the message pump never re-enters WebView2.
             if can_persist_global_position() {
                 manager.update_bounds(Some((position.x, position.y)), None);
-                emit_runtime(app, &manager);
+                spawn_deferred_runtime_emit(app.clone());
             }
         }
         tauri::WindowEvent::Resized(size) => {
             manager.update_bounds(None, Some((size.width, size.height)));
-            emit_runtime(app, &manager);
+            spawn_deferred_runtime_emit(app.clone());
         }
         tauri::WindowEvent::Destroyed => {
             manager.mark_destroyed();
@@ -456,6 +462,30 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &tauri::W
         }
         _ => {}
     }
+}
+
+/// Coalesces the burst of Moved/Resized events from a drag into one deferred
+/// runtime broadcast. Runs entirely off the main thread; a 150ms quiet window
+/// means a single emit when the drag settles instead of dozens mid-drag.
+fn spawn_deferred_runtime_emit(app: tauri::AppHandle) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
+    static LAST_SCHEDULED: AtomicU32 = AtomicU32::new(0);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u32)
+        .unwrap_or(0);
+    LAST_SCHEDULED.store(now_ms, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        let last = LAST_SCHEDULED.load(Ordering::Relaxed);
+        if last != now_ms {
+            // A newer move/resize superseded this one; it owns the emit.
+            return;
+        }
+        let manager = app.state::<OverlayManager>();
+        emit_runtime(&app, &manager);
+    });
 }
 
 #[cfg(test)]

@@ -3,11 +3,17 @@
 import {
   AirplaneTilt,
   Brain,
+  CaretDown,
+  CaretLeft,
+  ChatCircle,
+  CircleNotch,
   Cpu,
   Crosshair,
   DesktopTower,
   DownloadSimple,
   Ear,
+  Eraser,
+  GearSix,
   GithubLogo,
   Globe,
   GraphicsCard,
@@ -15,9 +21,14 @@ import {
   LockKey,
   LockSimple,
   Microphone,
+  PaperPlaneTilt,
+  PencilSimple,
   PlugsConnected,
+  PushPin,
   Question,
   Sliders,
+  SlidersHorizontal,
+  SpeakerHigh,
   Sparkle,
   Stack,
   Timer,
@@ -25,7 +36,7 @@ import {
   Waveform,
   X,
 } from "@phosphor-icons/react";
-import { useEffect, useMemo, useRef, type CSSProperties, type PropsWithChildren } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PropsWithChildren } from "react";
 
 /** Custom PRMPTR ear logo (inline SVG, replaces Phosphor Ear) */
 function Logo({ className = "", size = 22, bold = false }: { className?: string; size?: number; bold?: boolean }) {
@@ -171,9 +182,6 @@ const faqs = [
 
 type LandingProps = {
   motion?: boolean;
-  mainScreenshot?: string;
-  captureScreenshot?: string;
-  voiceScreenshot?: string;
 };
 
 function Reveal({ children, className = "", enabled = true }: PropsWithChildren<{ className?: string; enabled?: boolean }>) {
@@ -214,7 +222,7 @@ function SectionShell({ children, className = "" }: PropsWithChildren<{ classNam
 
 function Eyebrow({ icon: Icon, children }: PropsWithChildren<{ icon: typeof X }>) {
   return (
-    <span className="inline-flex items-center gap-2 border border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60),inset_1px_0_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">
+    <span className="inline-flex items-center gap-2 border border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60),inset_1px_0_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)] px-4 py-2 font-sans text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">
       <Icon size={12} weight="bold" />
       {children}
     </span>
@@ -225,6 +233,579 @@ function CutCard({ children, innerClassName = "" }: PropsWithChildren<{ innerCla
   return (
     <div className="h-full">
       <div className={`prmptr-cut-card-inner h-full border border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60),inset_1px_0_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)] bg-[oklch(0.2_0.004_60)] ${innerClassName}`}>{children}</div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * App UI, rebuilt in markup
+ *
+ * The panes below are recreations of the real components — dashboard.tsx,
+ * live-feed.tsx, ai-response.tsx and session-config.tsx — reusing the app's own
+ * semantic classes (bg-background, border-border, text-muted-foreground) and the
+ * .response-section / .prose-response / .feed-item-enter rules from globals.css.
+ *
+ * It also runs the app's actual loop: transcripts land newest-first as each
+ * person speaks, auto-trigger fires mid-conversation, and the reply streams in
+ * section by section behind a caret. Every visual state is a pure function of
+ * one clock, so the whole thing is deterministic and loops cleanly.
+ * ------------------------------------------------------------------------- */
+
+type DemoChannel = "you" | "them";
+
+/** Transcripts, oldest first. `at` is when the item lands; the speaker's meter
+ *  runs for SPEAK_LEAD ms before that, the way audio precedes a transcript. */
+const demoFeed: Array<{
+  at: number;
+  channel: DemoChannel;
+  label: string;
+  source: string;
+  time: string;
+  text: string;
+}> = [
+  {
+    at: 1000,
+    channel: "them",
+    label: "Them",
+    source: "Speakers (output)",
+    time: "21:14:02",
+    text: "Round three. Which planet in our solar system has the most moons?",
+  },
+  {
+    at: 2600,
+    channel: "you",
+    label: "You",
+    source: "Microphone Array (input)",
+    time: "21:14:09",
+    text: "Oh, I know this one. I one hundred percent know this one.",
+  },
+  {
+    at: 4000,
+    channel: "them",
+    label: "Them",
+    source: "Speakers (output)",
+    time: "21:14:13",
+    text: "You said that about the capital of Australia.",
+  },
+  {
+    at: 6400,
+    channel: "you",
+    label: "You",
+    source: "Microphone Array (input)",
+    time: "21:14:18",
+    text: "That was a trick question and everyone at this table knows it.",
+  },
+];
+
+/** The reply, in the app's section format. Streams line by line. */
+const demoSections: Array<{
+  category: "dialog" | "action" | "context";
+  label: string;
+  icon: typeof X;
+  list?: boolean;
+  lines: string[];
+}> = [
+  {
+    category: "dialog",
+    label: "Say",
+    icon: ChatCircle,
+    lines: ["“Saturn. 274 moons — it overtook Jupiter back in 2023.”"],
+  },
+  {
+    category: "action",
+    label: "Do",
+    icon: Lightning,
+    list: true,
+    lines: [
+      "Say it before Dave does. He is already whispering.",
+      "Do not bring up Pluto. Not again.",
+    ],
+  },
+  {
+    category: "context",
+    label: "Context",
+    icon: PushPin,
+    lines: ["It was Canberra, by the way. You got that one wrong too."],
+  },
+];
+
+const SPEAK_LEAD = 900;
+const THINK_AT = 4900;
+const STREAM_AT = 5700;
+const CHARS_PER_MS = 0.075;
+const DEMO_CHARS = demoSections.reduce((total, section) => total + section.lines.reduce((n, line) => n + line.length, 0), 0);
+const STREAM_END = STREAM_AT + DEMO_CHARS / CHARS_PER_MS;
+const DEMO_LOOP_MS = STREAM_END + 5200;
+/** Server render and the reduced-motion path both show the settled state. */
+const DEMO_SETTLED = STREAM_END + 400;
+
+/**
+ * One clock for the whole window. Starts only once the window is on screen and
+ * only when motion is wanted; otherwise it stays parked on the settled frame,
+ * which is also what the server renders, so hydration matches.
+ */
+function useDemoClock(enabled: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [elapsed, setElapsed] = useState(DEMO_SETTLED);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || !enabled) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    let timer: number | undefined;
+    let start = 0;
+
+    const stop = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+    };
+
+    const run = () => {
+      if (timer !== undefined) return;
+      start = performance.now();
+      // 55ms ticks: several characters land per frame, which is closer to how
+      // real token streaming arrives than a per-character crawl, and keeps the
+      // re-render rate off the critical path.
+      timer = window.setInterval(() => {
+        setElapsed((performance.now() - start) % DEMO_LOOP_MS);
+      }, 55);
+    };
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) run();
+        else stop();
+      },
+      { threshold: 0.15 },
+    );
+
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      stop();
+    };
+  }, [enabled]);
+
+  return { ref, elapsed };
+}
+
+/** Slice the streamed reply at `chars`, mirroring how sections appear as the
+ *  markdown parser sees each marker arrive. */
+function sliceSections(chars: number) {
+  let budget = chars;
+  return demoSections.map((section) => {
+    const lines = section.lines.map((line) => {
+      const shown = Math.max(0, Math.min(line.length, budget));
+      budget -= line.length;
+      return { text: line.slice(0, shown), complete: shown === line.length, started: shown > 0 };
+    });
+    return { ...section, lines, started: lines[0].started };
+  });
+}
+
+function ChannelPill({ label, levels, role, active }: { label: string; levels: number[]; role: DemoChannel; active: boolean }) {
+  const pill = active
+    ? role === "you"
+      ? "border-primary/45 bg-primary/10 text-primary"
+      : "border-sky-400/45 bg-sky-400/10 text-sky-300"
+    : "border-border/90 bg-background text-muted-foreground/75";
+
+  return (
+    <span className={`inline-flex h-[26px] w-[168px] items-center justify-between gap-1.5 border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition-colors ${pill}`}>
+      <span className="flex shrink-0 items-center gap-1.5">
+        <span className={`size-1.5 shrink-0 rounded-full transition-colors ${active ? (role === "you" ? "bg-primary" : "bg-sky-400") : "bg-muted-foreground/40"}`} />
+        <span className="shrink-0 font-medium">{label}</span>
+      </span>
+      <span className="flex h-[calc(100%-8px)] flex-1 items-end gap-[1.5px]" aria-hidden="true">
+        {levels.map((h, i) => (
+          <span
+            key={i}
+            className={`flex-1 rounded-[1px] ${active ? "prmptr-eq-bar" : ""}`}
+            style={{
+              height: `${(active ? Math.max(h, 0.05) : 0.05) * 100}%`,
+              background: active
+                ? role === "you"
+                  ? `oklch(${0.72 + h * 0.14} ${0.14 + h * 0.05} 65 / ${0.55 + h * 0.45})`
+                  : `oklch(${0.72 + h * 0.12} ${0.1 + h * 0.04} 230 / ${0.5 + h * 0.4})`
+                : "oklch(0.5 0.02 80 / 0.35)",
+              "--phase": `${(-i * 0.06).toFixed(2)}s`,
+            } as CSSProperties}
+          />
+        ))}
+      </span>
+    </span>
+  );
+}
+
+const EQ_YOU = [0.2, 0.45, 0.8, 0.55, 0.95, 0.6, 0.35, 0.7, 0.9, 0.5, 0.25, 0.65, 0.85, 0.4, 0.75, 0.3, 0.6, 0.95, 0.45, 0.8, 0.35, 0.55];
+const EQ_THEM = [0.3, 0.55, 0.35, 0.75, 0.45, 0.9, 0.5, 0.3, 0.7, 0.4, 0.85, 0.6, 0.35, 0.8, 0.45, 0.65, 0.3, 0.5, 0.9, 0.4, 0.6, 0.35];
+
+/** The shipped three-pane window at its default 25 / 50 / 25 layout. */
+function AppWindow({ motion = true }: { motion?: boolean }) {
+  const { ref, elapsed } = useDemoClock(motion);
+
+  const arrived = demoFeed.filter((item) => elapsed >= item.at);
+  const feedItems = [...arrived].reverse(); // live-feed renders newest first
+  const speaking = demoFeed.find((item) => elapsed >= item.at - SPEAK_LEAD && elapsed < item.at)?.channel ?? null;
+
+  const streaming = elapsed >= THINK_AT && elapsed < STREAM_END;
+  const typed = Math.max(0, (elapsed - STREAM_AT) * CHARS_PER_MS);
+  const sections = sliceSections(typed);
+  const started = elapsed >= STREAM_AT && sections[0].started;
+  const lastVisible = (() => {
+    let section = -1;
+    let line = -1;
+    sections.forEach((s, si) => s.lines.forEach((l, li) => {
+      if (l.started) {
+        section = si;
+        line = li;
+      }
+    }));
+    return { section, line };
+  })();
+
+  return (
+    <div ref={ref} className="app-window bg-background text-foreground">
+      {/* Header — components/dashboard.tsx */}
+      <header className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <Logo size={16} className="text-primary" />
+            <span className="text-xs font-semibold tracking-[0.08em] text-foreground/90">PRMPTR</span>
+          </div>
+          <div className="h-4 w-px bg-border" />
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={`size-1.5 shrink-0 rounded-full bg-primary ${motion ? "status-pulse" : ""}`} />
+            <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">Recording</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <div className="mr-1 hidden items-center gap-1.5 lg:flex">
+            <ChannelPill label="You" levels={EQ_YOU} role="you" active={speaking === "you"} />
+            <ChannelPill label="Them" levels={EQ_THEM} role="them" active={speaking === "them"} />
+          </div>
+          <span className="inline-flex h-7 min-w-[52px] items-center justify-center px-2 text-xs text-foreground/80">Stop</span>
+          <div className="h-4 w-px bg-border" />
+          <GearSix weight="bold" className="size-3.5 text-muted-foreground" />
+        </div>
+      </header>
+
+      <div className="grid min-h-[430px] grid-cols-1 md:grid-cols-[minmax(0,32%)_minmax(0,1fr)] lg:grid-cols-[minmax(0,25%)_minmax(0,50%)_minmax(0,25%)]">
+        {/* Left: Feed — components/live-feed.tsx */}
+        <div className="flex min-h-0 flex-col border-b border-border md:border-b-0 md:border-r">
+          <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-4">
+            <div className="flex items-center gap-2">
+              <Waveform weight="bold" className="size-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium text-foreground/80">Feed</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                <span className={`size-1 rounded-full bg-emerald-400 ${motion ? "status-pulse" : ""}`} />
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Live</span>
+              </div>
+              <CaretLeft weight="bold" className="size-3.5 text-muted-foreground" />
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col">
+            {feedItems.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground/50">
+                <Waveform weight="thin" className="size-8" />
+                <span className="text-[11px]">Listening for activity...</span>
+              </div>
+            ) : (
+              feedItems.map((item, i) => (
+                <div key={item.time} className={`feed-item-enter px-4 py-2.5 ${i > 0 ? "border-t border-border" : ""}`}>
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <Microphone weight="fill" className="size-2.5 shrink-0 text-primary/60" />
+                    <span className={`text-[9px] font-medium uppercase tracking-wider ${item.channel === "you" ? "text-primary/70" : "text-sky-300"}`}>
+                      {item.label}
+                    </span>
+                    <span className="ml-auto truncate text-[9px] text-muted-foreground/50">{item.source}</span>
+                    <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground/40">{item.time}</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-foreground/80">{item.text}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Centre: Analysis — components/ai-response.tsx */}
+        <div className="flex min-h-0 flex-col border-b border-border md:border-b-0 lg:border-r">
+          <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-4">
+            <div className="flex items-center gap-2">
+              <Brain weight="bold" className="size-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium text-foreground/80">Analysis</span>
+            </div>
+            {streaming && (
+              <div className="flex items-center gap-1.5">
+                <CircleNotch weight="bold" className={`size-3 text-primary ${motion ? "animate-spin" : ""}`} />
+                <span className="text-[10px] uppercase tracking-wider text-primary/80">Thinking</span>
+              </div>
+            )}
+          </div>
+
+          <div className="min-h-0 flex-1 px-4 py-3">
+            {!started ? (
+              <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground/50">
+                <Lightning weight="thin" className="size-8" />
+                <span className="text-[11px]">Auto-analysis will start when data arrives</span>
+                <span className="text-[10px] tabular-nums text-muted-foreground/30">{arrived.length} items in feed</span>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground/50">
+                  <span className="tabular-nums">21:14</span>
+                  <span className="text-muted-foreground/20">/</span>
+                  <span className="truncate">claude-sonnet-4.5</span>
+                </div>
+
+                <div className="response-sections">
+                  {sections.map((section, si) => {
+                    if (!section.started) return null;
+                    const Icon = section.icon;
+                    return (
+                      <div key={section.label} className={`response-section response-section--${section.category}`}>
+                        <div className="response-section-header">
+                          <Icon weight="bold" className="response-section-icon" />
+                          <span className="response-section-label">{section.label}</span>
+                        </div>
+                        <div className="prose-response">
+                          {section.list ? (
+                            <ul>
+                              {section.lines.map((line, li) =>
+                                line.started ? (
+                                  <li key={li}>
+                                    {line.text}
+                                    {streaming && lastVisible.section === si && lastVisible.line === li ? <StreamCaret /> : null}
+                                  </li>
+                                ) : null,
+                              )}
+                            </ul>
+                          ) : (
+                            section.lines.map((line, li) =>
+                              line.started ? (
+                                <p key={li}>
+                                  {line.text}
+                                  {streaming && lastVisible.section === si && lastVisible.line === li ? <StreamCaret /> : null}
+                                </p>
+                              ) : null,
+                            )
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="shrink-0 space-y-2 border-t border-border px-4 py-2.5">
+            <div className="flex gap-1.5">
+              <span className="flex h-8 w-full min-w-0 items-center border border-input bg-input/30 px-2.5 text-xs text-muted-foreground">
+                Ask about this session...
+              </span>
+              <span className="inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground">
+                <PaperPlaneTilt weight="bold" className="size-3.5" />
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`inline-flex h-7 items-center gap-1 bg-primary px-2.5 text-[11px] font-medium text-primary-foreground ${streaming ? "opacity-50" : ""}`}>
+                {streaming ? (
+                  <CircleNotch weight="bold" className={`size-3 ${motion ? "animate-spin" : ""}`} />
+                ) : (
+                  <Lightning weight="fill" className="size-3" />
+                )}
+                {streaming ? "Analyzing" : "Analyze"}
+              </span>
+              <span className="flex-1 truncate text-[10px] tabular-nums text-muted-foreground/40">auto / 15s</span>
+              <Eraser weight="bold" className="size-3.5 text-muted-foreground/50" />
+            </div>
+          </div>
+        </div>
+
+        {/* Right: Session config — components/session-config.tsx */}
+        <div className="hidden min-h-0 flex-col lg:flex">
+          <div className="flex h-10 shrink-0 items-center border-b border-border">
+            <div className="flex h-full min-w-0 flex-1 items-center gap-2 px-4 text-xs font-medium text-foreground/80">
+              <SlidersHorizontal weight="bold" className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="flex-1 truncate text-left">Thursday trivia</span>
+              <CaretDown weight="bold" className="size-2.5 shrink-0 text-muted-foreground" />
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-4 px-4 py-3">
+            <div className="space-y-1.5">
+              <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Quick Start</span>
+              <div className="grid grid-cols-3 gap-1">
+                {["Interview", "Roleplay", "Meeting", "Podcast", "Lecture", "General"].map((template) => (
+                  <span
+                    key={template}
+                    className={`whitespace-nowrap border px-2 py-1.5 text-center text-[10px] ${
+                      template === "General" ? "border-primary bg-primary text-primary-foreground" : "border-border text-foreground/70"
+                    }`}
+                  >
+                    {template}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Context</span>
+              <div className="w-full border border-input px-2.5 py-2 text-left">
+                <p className="text-[11px] leading-relaxed text-foreground/70">
+                  Pub quiz with friends. Give me the answer fast, no hedging, and one line of trash talk I can use...
+                </p>
+                <div className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground/40">
+                  <PencilSimple weight="bold" className="size-2.5" />
+                  <span>Edit</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Model</span>
+              <div className="flex h-7 w-full items-center gap-2 border border-input px-2.5 text-xs text-foreground/80">
+                <Sparkle weight="bold" className="size-3 shrink-0 text-muted-foreground" />
+                <span className="flex-1 truncate">claude-sonnet-4.5</span>
+                <CaretDown weight="bold" className="size-2.5 shrink-0 text-muted-foreground" />
+              </div>
+            </div>
+
+            <div className="h-px bg-border" />
+
+            <div className="space-y-1.5">
+              <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Trigger</span>
+              <div className="flex border border-border">
+                {["Manual", "Auto", "Smart"].map((mode, i) => (
+                  <span
+                    key={mode}
+                    className={`flex-1 px-2 py-1.5 text-center text-[10px] uppercase tracking-wide ${i > 0 ? "border-l border-border" : ""} ${
+                      mode === "Auto" ? "bg-primary text-primary-foreground" : "text-muted-foreground"
+                    }`}
+                  >
+                    {mode}
+                  </span>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground/50">Triggers on a timer interval</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Interval</span>
+              <div className="flex items-center gap-3">
+                <span className="relative h-0.5 flex-1 bg-muted">
+                  <span className="absolute inset-y-0 left-0 w-[12%] bg-primary" />
+                  <span className="absolute left-[12%] top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary" />
+                </span>
+                <span className="w-8 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">15s</span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Personality</span>
+              <div className="flex h-7 w-full items-center border border-input px-2.5 text-xs text-foreground/80">
+                <span className="flex-1 truncate">Roast Master</span>
+                <CaretDown weight="bold" className="size-2.5 shrink-0 text-muted-foreground" />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Response Style</span>
+              <div className="flex h-7 w-full items-center border border-input px-2.5 text-xs text-foreground/80">
+                <span className="flex-1 truncate">Concise</span>
+                <CaretDown weight="bold" className="size-2.5 shrink-0 text-muted-foreground" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer — shortcut hints */}
+      <div className="flex h-7 shrink-0 select-none items-center gap-5 border-t border-border px-4 text-[10px] text-muted-foreground/70">
+        {[
+          ["Ctrl+Shift+Space", "Analyze"],
+          ["Ctrl+Shift+X", "Clear"],
+          ["Ctrl+Shift+2", "Settings"],
+        ].map(([key, action]) => (
+          <span key={action} className="flex items-center gap-1.5">
+            <kbd className="border border-border bg-muted/50 px-1 py-px text-[9px] font-medium tracking-tight">{key}</kbd>
+            <span>{action}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StreamCaret() {
+  return <span className="ml-0.5 inline-block h-3.5 w-[3px] translate-y-[2px] bg-primary cursor-blink" />;
+}
+
+/** Settings cards — components/settings-panel.tsx */
+function SettingsCard({ icon: Icon, label, children }: PropsWithChildren<{ icon: typeof X; label: string }>) {
+  return (
+    <div className="app-window flex-1 bg-background p-4 text-foreground">
+      <div className="mb-3 flex items-center gap-2">
+        <div className="flex size-6 shrink-0 items-center justify-center rounded-sm bg-muted/60">
+          <Icon weight="bold" className="size-3.5 text-muted-foreground" />
+        </div>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/80">{label}</span>
+      </div>
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
+}
+
+function SettingsField({ label, value, icon: Icon }: { label: string; value: string; icon?: typeof X }) {
+  return (
+    <div>
+      <span className="mb-1 block text-[10px] font-medium text-foreground/60">{label}</span>
+      <div className="flex h-7 w-full items-center gap-2 border border-input px-2.5 text-xs">
+        {Icon ? <Icon weight="bold" className="size-3 shrink-0 text-muted-foreground" /> : null}
+        <span className="flex-1 truncate text-foreground/80">{value}</span>
+        <CaretDown weight="bold" className="size-2.5 shrink-0 text-muted-foreground" />
+      </div>
+    </div>
+  );
+}
+
+function SettingsSegmented({ label, options, active }: { label: string; options: string[]; active: string }) {
+  return (
+    <div>
+      <span className="mb-1.5 block text-[10px] font-medium text-foreground/60">{label}</span>
+      <div className="flex gap-1">
+        {options.map((option) => (
+          <span
+            key={option}
+            className={`flex-1 border px-2 py-1 text-center text-[10px] ${
+              option === active ? "border-primary bg-primary text-primary-foreground" : "border-border text-foreground/70"
+            }`}
+          >
+            {option}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SettingsSlider({ label, value, fill }: { label: string; value: string; fill: string }) {
+  return (
+    <div>
+      <span className="mb-1.5 block text-[10px] font-medium text-foreground/60">{label}</span>
+      <div className="flex items-center gap-3">
+        <span className="relative h-0.5 flex-1 bg-muted">
+          <span className="absolute inset-y-0 left-0 bg-primary" style={{ width: fill }} />
+          <span className="absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary" style={{ left: fill }} />
+        </span>
+        <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">{value}</span>
+      </div>
     </div>
   );
 }
@@ -263,12 +844,7 @@ function DuplexHelix({ active = true, points = 44 }: { active?: boolean; points?
   );
 }
 
-export default function PrmptrLanding({
-  motion = true,
-  mainScreenshot = "/uploads/pasted-1787396485869-0.png",
-  captureScreenshot = "/uploads/pasted-1787396500853-0.png",
-  voiceScreenshot = "/uploads/pasted-1787396515198-0.png",
-}: LandingProps) {
+export default function PrmptrLanding({ motion = true }: LandingProps) {
   const tickerLoop = useMemo(() => [...TICKER, ...TICKER], []);
 
   return (
@@ -281,10 +857,10 @@ export default function PrmptrLanding({
         <nav className="relative mx-auto flex max-w-[1360px] items-center justify-between px-5 pt-6 sm:px-8 lg:px-9">
           <a href="#top" className="flex items-center gap-2.5 hover:text-current">
             <Logo size={22} bold className="" />
-            <span className="text-[21px] font-semibold tracking-[0.06em]" style={{ fontFamily: "var(--font-jetbrains), monospace" }}>PRMPTR<span className="sr-only">.cc</span></span>
+            <span className="text-[21px] font-semibold tracking-[0.06em]" style={{ fontFamily: "var(--font-jetbrains), monospace" }}>PRMPTR <span className="text-[oklch(0.16_0.012_55)]">//</span><span className="sr-only">.cc</span></span>
           </a>
 
-          <div className="flex items-center gap-4 font-mono text-xs sm:gap-6">
+          <div className="flex items-center gap-4 font-sans text-xs sm:gap-6">
             <a href="#app" className="hidden hover:text-current md:inline">The app</a>
             <a href="#faq" className="hidden hover:text-current md:inline">FAQ</a>
             <a href={REPO_URL} className="hidden hover:text-current sm:inline">Source</a>
@@ -308,7 +884,7 @@ export default function PrmptrLanding({
             <span className="bg-[oklch(0.16_0.012_55)] p-px prmptr-cut-button-wrap">
               <a
                 href={DOWNLOAD_URL}
-                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.16_0.012_55)] text-white hover:bg-[oklch(0.78_0.155_65)] hover:text-[oklch(0.16_0.012_55)]"
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-sans text-[13px] font-bold bg-[oklch(0.16_0.012_55)] text-white hover:bg-[oklch(0.78_0.155_65)] hover:text-[oklch(0.16_0.012_55)]"
               >
                 <DownloadSimple size={17} weight="bold" />
                 Download for Windows
@@ -317,7 +893,7 @@ export default function PrmptrLanding({
             <span className="bg-[oklch(0.16_0.012_55/55%)] p-px prmptr-cut-button-wrap">
               <a
                 href="#app"
-                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)] hover:bg-[oklch(0.16_0.012_55)] hover:text-white"
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-sans text-[13px] font-bold bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)] hover:bg-[oklch(0.16_0.012_55)] hover:text-white"
               >
                 See it running
               </a>
@@ -329,12 +905,12 @@ export default function PrmptrLanding({
 
       <section className="[box-shadow:inset_0_-1px_0_oklch(0.115_0.004_60)] border-b border-white/10 bg-[oklch(0.165_0.004_60)]">
         <div className="mx-auto flex max-w-[1360px] items-center gap-4 px-5 py-5 sm:px-8 lg:gap-[30px] lg:px-9 lg:py-[26px]">
-          <span className="flex shrink-0 items-center gap-2.5 font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">
+          <span className="flex shrink-0 items-center gap-2.5 font-sans text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">
             <span className={`${motion ? "prmptr-pulse" : ""} h-[7px] w-[7px] rounded-full bg-[oklch(0.85_0.16_155)]`} />
             Listening
           </span>
           <DuplexHelix active={motion} />
-          <span className="hidden shrink-0 whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.16em] text-[oklch(0.8_0.008_75/65%)] lg:inline">
+          <span className="hidden shrink-0 whitespace-nowrap font-sans text-[11px] uppercase tracking-[0.16em] text-[oklch(0.8_0.008_75/65%)] lg:inline">
             Moonshine int8 · ~50ms · on device · <span className="text-[#76b900]">CUDA</span> ready
           </span>
         </div>
@@ -348,42 +924,42 @@ export default function PrmptrLanding({
 
           <div className="mt-12 grid overflow-hidden border border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60),inset_1px_0_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)] bg-[oklch(0.19_0.004_60)] lg:grid-cols-[1fr_172px_1fr]">
             <div className="p-6 sm:p-8">
-              <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[oklch(0.82_0.15_68)]">Always on your machine</p>
+              <p className="font-sans text-[11px] uppercase tracking-[0.22em] text-[oklch(0.82_0.15_68)]">Always on your machine</p>
               <div className="mt-5 flex flex-col gap-2.5">
                 {localChain.map(({ icon: Icon, title, meta }) => (
                   <div key={title} className="prmptr-small-cut bg-[oklch(0.78_0.155_65/40%)] p-px">
                     <div className="prmptr-small-cut-inner flex items-center gap-3.5 bg-[oklch(0.225_0.02_62)] p-3.5 sm:px-4">
                       <Icon size={19} className="shrink-0 text-[oklch(0.82_0.15_68)]" />
-                      <span className="flex-1 font-mono text-[12.5px] uppercase tracking-[0.1em]">{title}</span>
-                      <span className="font-mono text-[11px] text-[oklch(0.8_0.008_75/65%)]">{meta}</span>
+                      <span className="flex-1 font-sans text-[12.5px] uppercase tracking-[0.1em]">{title}</span>
+                      <span className="font-sans text-[11px] text-[oklch(0.8_0.008_75/65%)]">{meta}</span>
                     </div>
                   </div>
                 ))}
               </div>
-              <p className="mt-5 font-mono text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.85_0.16_155)]">✓ No key needed to get going</p>
+              <p className="mt-5 font-sans text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.85_0.16_155)]">✓ No key needed to get going</p>
             </div>
 
             <div className="flex items-center justify-center gap-4 border-y border-white/10 bg-[oklch(0.175_0.004_60)] p-5 lg:flex-col lg:border-x lg:border-y-0 lg:px-0 lg:py-8 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60)] lg:[box-shadow:inset_1px_0_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)]">
               <span className="h-px flex-1 bg-[oklch(0.8_0.008_75/22%)] lg:h-auto lg:w-px" />
               <span className="flex flex-col items-center gap-2 border border-[oklch(0.78_0.155_65/50%)] bg-[oklch(0.78_0.155_65/12%)] px-4 py-3.5 text-center">
                 <ToggleRight size={22} weight="bold" className="text-[oklch(0.82_0.15_68)]" />
-                <span className="font-mono text-[9.5px] uppercase leading-[1.5] tracking-[0.16em] text-[oklch(0.82_0.15_68)]">Your<br />call</span>
+                <span className="font-sans text-[9.5px] uppercase leading-[1.5] tracking-[0.16em] text-[oklch(0.82_0.15_68)]">Your<br />call</span>
               </span>
               <span className="h-px flex-1 bg-[oklch(0.8_0.008_75/22%)] lg:h-auto lg:w-px" />
             </div>
 
             <div className="p-6 sm:p-8">
-              <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[oklch(0.8_0.008_75/75%)]">Optional, if you want the reach</p>
+              <p className="font-sans text-[11px] uppercase tracking-[0.22em] text-[oklch(0.8_0.008_75/75%)]">Optional, if you want the reach</p>
               <div className="mt-5 flex flex-col gap-2.5">
                 {providers.map(({ icon: Icon, title, tag }) => (
                   <div key={title} className="flex items-center gap-3.5 border border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60),inset_1px_0_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)] p-3.5 sm:px-4">
                     <Icon size={19} className="shrink-0 text-[oklch(0.8_0.008_75/80%)]" />
-                    <span className="flex-1 font-mono text-[12.5px] uppercase tracking-[0.1em] text-[oklch(0.9_0.008_80/90%)]">{title}</span>
-                    <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-[oklch(0.8_0.008_75/60%)]">{tag}</span>
+                    <span className="flex-1 font-sans text-[12.5px] uppercase tracking-[0.1em] text-[oklch(0.9_0.008_80/90%)]">{title}</span>
+                    <span className="font-sans text-[9.5px] uppercase tracking-[0.16em] text-[oklch(0.8_0.008_75/60%)]">{tag}</span>
                   </div>
                 ))}
               </div>
-              <p className="mt-5 font-mono text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/70%)]">One key, 64 models</p>
+              <p className="mt-5 font-sans text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/70%)]">One key, 64 models</p>
             </div>
           </div>
 
@@ -391,7 +967,7 @@ export default function PrmptrLanding({
             {benefits.map(({ icon: Icon, kicker, title, body }) => (
               <Reveal key={title} enabled={motion}>
                 <CutCard innerClassName="p-7 text-center sm:px-[30px] sm:pb-8">
-                  <span className="inline-flex items-center gap-2 border border-[oklch(0.78_0.155_65/45%)] px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-[oklch(0.82_0.15_68)]">
+                  <span className="inline-flex items-center gap-2 border border-[oklch(0.78_0.155_65/45%)] px-3 py-1.5 font-sans text-[10.5px] uppercase tracking-[0.18em] text-[oklch(0.82_0.15_68)]">
                     <Icon size={12} weight="bold" />{kicker}
                   </span>
                   <h3 className="mt-5 text-[26px] font-medium tracking-[-0.025em]">{title}</h3>
@@ -411,32 +987,42 @@ export default function PrmptrLanding({
 
           <div className="prmptr-window-cut mt-12 bg-white/15 p-px">
             <div className="prmptr-window-cut-inner bg-[oklch(0.15_0.004_60)]">
-              <div className="flex items-center gap-2 border-b border-white/10 [box-shadow:inset_0_-1px_0_oklch(0.115_0.004_60)] px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/60%)] sm:text-[11px]">
+              <div className="flex items-center gap-2 border-b border-white/10 [box-shadow:inset_0_-1px_0_oklch(0.115_0.004_60)] px-4 py-2.5 font-sans text-[10px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/60%)] sm:text-[11px]">
                 <span className="h-[9px] w-[9px] rounded-full bg-[oklch(0.62_0.2_25/70%)]" />
                 <span className="h-[9px] w-[9px] rounded-full bg-[oklch(0.83_0.16_82/70%)]" />
                 <span className="h-[9px] w-[9px] rounded-full bg-[oklch(0.85_0.16_155/70%)]" />
-                <span className="ml-2 hidden sm:inline">prmptr.cc — live session · interview preset</span>
-                <span className="ml-auto text-[oklch(0.82_0.15_68)]">● Recording</span>
+                <span className="ml-2 hidden sm:inline">prmptr.cc — live session · thursday trivia</span>
               </div>
-              <img src={mainScreenshot} alt="PRMPTR main window: feed, analysis and configuration panes" className="block h-auto w-full" />
+              <AppWindow motion={motion} />
             </div>
           </div>
 
           <div className="mt-5 grid gap-5 md:grid-cols-2 lg:gap-[22px]">
-            <Reveal enabled={motion}>
-              <CutCard innerClassName="overflow-hidden bg-[oklch(0.15_0.004_60)] p-0">
-                <img src={captureScreenshot} alt="Settings: capture and voice, transcription mode and engine" className="block h-auto w-full" />
-                <div className="[box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)] border-t border-white/10 px-5 pb-5 pt-4">
-                  <p className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Capture & voice</p>
+            <Reveal enabled={motion} className="h-full">
+              <CutCard innerClassName="flex h-full flex-col overflow-hidden bg-[oklch(0.15_0.004_60)] p-0">
+                <SettingsCard icon={SpeakerHigh} label="Audio Devices">
+                  <SettingsField label="Input — You" value="Microphone Array (input)" icon={Microphone} />
+                  <SettingsField label="Output — Them" value="Speakers (output)" icon={DesktopTower} />
+                  <SettingsSegmented label="Mode" options={["Local (Free)", "Direct Deepgram", "Screenpipe"]} active="Local (Free)" />
+                  <SettingsSegmented label="Engine" options={["Moonshine int8", "Whisper Turbo"]} active="Moonshine int8" />
+                </SettingsCard>
+                <div className="mt-auto [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)] border-t border-white/10 px-5 pb-5 pt-4">
+                  <p className="font-sans text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Capture & voice</p>
                   <p className="mt-2.5 text-[14.5px] leading-[1.6] text-[oklch(0.8_0.008_75/80%)]">Pick your devices, then pick the engine. Local Whisper or Moonshine by default; Deepgram and Screenpipe are there if you want them.</p>
                 </div>
               </CutCard>
             </Reveal>
-            <Reveal enabled={motion}>
-              <CutCard innerClassName="overflow-hidden bg-[oklch(0.15_0.004_60)] p-0">
-                <img src={voiceScreenshot} alt="Settings: TTS voice reply configuration" className="block h-auto w-full" />
-                <div className="[box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)] border-t border-white/10 px-5 pb-5 pt-4">
-                  <p className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Voice reply</p>
+            <Reveal enabled={motion} className="h-full">
+              <CutCard innerClassName="flex h-full flex-col overflow-hidden bg-[oklch(0.15_0.004_60)] p-0">
+                <SettingsCard icon={Waveform} label="Voice Reply">
+                  <SettingsField label="Endpoint" value="Bundled Sherpa / Kokoro" icon={Sparkle} />
+                  <SettingsSegmented label="Accent" options={["American", "British", "Other"]} active="American" />
+                  <SettingsField label="Voice" value="af_heart" />
+                  <SettingsSlider label="Rate" value="1.05x" fill="52%" />
+                  <SettingsSlider label="Volume" value="80%" fill="80%" />
+                </SettingsCard>
+                <div className="mt-auto [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)] border-t border-white/10 px-5 pb-5 pt-4">
+                  <p className="font-sans text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Voice reply</p>
                   <p className="mt-2.5 text-[14.5px] leading-[1.6] text-[oklch(0.8_0.008_75/80%)]">Bundled Sherpa/Kokoro speaks each reply through your output, with accent, voice, rate and volume under your control.</p>
                 </div>
               </CutCard>
@@ -463,7 +1049,7 @@ export default function PrmptrLanding({
             <div className="border-t border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)]">
               {steps.map((step) => (
                 <Reveal key={step.n} enabled={motion} className="border-b border-l-2 border-b-white/10 border-l-[oklch(0.78_0.155_65/70%)] [box-shadow:inset_0_-1px_0_oklch(0.115_0.004_60)] py-6 pl-6 sm:py-7">
-                  <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Step {step.n}</p>
+                  <p className="font-sans text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">Step {step.n}</p>
                   <h3 className="mt-3.5 max-w-[32ch] text-[25px] font-medium leading-[1.08] tracking-[-0.025em]">{step.title}</h3>
                   <p className="mt-3.5 max-w-[52ch] text-[15px] leading-[1.7] text-[oklch(0.8_0.008_75/78%)] [text-wrap:pretty]">{step.body}</p>
                 </Reveal>
@@ -471,8 +1057,8 @@ export default function PrmptrLanding({
             </div>
 
             <CutCard innerClassName="bg-[oklch(0.19_0.004_60)] p-6 sm:p-7">
-              <p className="font-mono text-[11px] uppercase tracking-[0.22em]">Local mode, laptop, no GPU</p>
-              <div className="mt-6 flex flex-col gap-6 font-mono">
+              <p className="font-sans text-[11px] uppercase tracking-[0.22em]">Local mode, laptop, no GPU</p>
+              <div className="mt-6 flex flex-col gap-6 font-sans">
                 {charts.map((chart) => (
                   <div key={chart.title}>
                     <p className="mb-3 text-[11.5px] uppercase tracking-[0.14em] text-[oklch(0.8_0.008_75/80%)]">{chart.title}</p>
@@ -497,7 +1083,7 @@ export default function PrmptrLanding({
                   <path fill="#76b900" d="M1065.22873,425.14577v-54.92689c5.32957-.37764,10.71688-.6626,16.20671-.83601,150.22334-4.72073,248.78057,129.07979,248.78057,129.07979,0,0-106.44633,147.84488-220.57771,147.84488-16.43786,0-31.14868-2.64945-44.40957-7.10172v-166.55441c58.48096,7.06441,70.23929,32.89765,105.40881,91.50382l78.19751-65.93138s-57.08111-74.86559-153.30623-74.86559c-10.47061,0-20.47697.73841-30.30009,1.78751M1065.22873,243.70607v82.0431c5.39104-.42772,10.78876-.76806,16.20671-.96562,208.90854-7.0375,345.01061,171.32778,345.01061,171.32778,0,0-156.33251,190.0968-319.19248,190.0968-14.92371,0-28.89631-1.37804-42.02484-3.70247v50.71342c11.22808,1.42675,22.85778,2.26787,34.99494,2.26787,151.56388,0,261.16891-77.39426,367.30475-169.00355,17.58279,14.09032,89.62866,48.36503,104.44416,63.3874-100.92116,84.47674-336.09264,152.56464-469.4168,152.56464-12.84867,0-25.2054-.77474-37.32704-1.94089v71.27251h576.05304V243.70607h-576.05304ZM1065.22873,639.20582v43.29984c-140.18046-24.99212-179.08606-170.70641-179.08606-170.70641,0,0,67.30211-74.57022,179.08606-86.65348v47.50564c-.08739,0-.14395-.022-.21976-.022-58.65535-7.04516-104.48913,47.76369-104.48913,47.76369,0,0,25.6781,92.2603,104.70889,118.81271M816.2553,505.48484s83.0803-122.59099,248.97342-135.26596v-44.46971c-183.74262,14.74528-342.85899,170.36216-342.85899,170.36216,0,0,90.11413,260.53312,342.85899,284.38323v-47.27548c-185.46867-23.33521-248.97342-227.73423-248.97342-227.73423Z"/>
                 </svg>
                 <div>
-                  <p className="font-mono text-[13px] font-bold tracking-[0.08em] text-[#76b900]">NVIDIA CUDA</p>
+                  <p className="font-sans text-[13px] font-bold tracking-[0.08em] text-[#76b900]">NVIDIA CUDA</p>
                   <p className="mt-0.5 text-[11px] text-[oklch(0.8_0.008_75/70%)]">GPU-accelerated inference when a card is present</p>
                 </div>
               </div>
@@ -516,7 +1102,7 @@ export default function PrmptrLanding({
                 <div className="border border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60),inset_1px_0_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)] p-7 sm:px-[30px] sm:pb-8">
                   <div className="flex items-start justify-between">
                     <h3 className="text-[22px] font-medium leading-[1.1] tracking-[-0.025em]">{capability.title}</h3>
-                    <span className="ml-4 shrink-0 font-mono text-[11px] tabular-nums text-[oklch(0.8_0.008_75/30%)]">{capability.n}</span>
+                    <span className="ml-4 shrink-0 font-sans text-[11px] tabular-nums text-[oklch(0.8_0.008_75/30%)]">{capability.n}</span>
                   </div>
                   <p className="mt-3 text-[14.5px] leading-[1.65] text-[oklch(0.8_0.008_75/78%)] [text-wrap:pretty]">{capability.body}</p>
                 </div>
@@ -528,9 +1114,9 @@ export default function PrmptrLanding({
         <div className="mx-auto mt-14 grid max-w-[1360px] border-y border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60),inset_0_-1px_0_oklch(0.115_0.004_60)] sm:grid-cols-2 lg:mt-[68px] lg:grid-cols-4">
           {stats.map((stat, i) => (
             <div key={stat.key} className={`border-t border-r border-b border-white/10 [box-shadow:inset_0_-1px_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60)] px-5 py-7 sm:px-8 lg:px-9 lg:py-[30px]${i === 0 ? " border-l [box-shadow:inset_0_-1px_0_oklch(0.115_0.004_60),inset_-1px_0_0_oklch(0.115_0.004_60),inset_1px_0_0_oklch(0.115_0.004_60)]" : ""}`}>
-              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">{stat.key}</p>
+              <p className="font-sans text-[11px] uppercase tracking-[0.2em] text-[oklch(0.82_0.15_68)]">{stat.key}</p>
               <p className="mt-4 text-[42px] font-medium leading-none tracking-[-0.035em] lg:text-[46px]">{stat.value}</p>
-              <p className="mt-3 font-mono text-[11.5px] text-[oklch(0.8_0.008_75/70%)]">{stat.note}</p>
+              <p className="mt-3 font-sans text-[11.5px] text-[oklch(0.8_0.008_75/70%)]">{stat.note}</p>
             </div>
           ))}
         </div>
@@ -546,7 +1132,7 @@ export default function PrmptrLanding({
           <div className="border-t border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)]">
             {faqs.map((faq) => (
               <div key={faq.n} className="grid grid-cols-[44px_1fr] gap-2 border-b border-white/10 [box-shadow:inset_0_-1px_0_oklch(0.115_0.004_60)] py-6 sm:grid-cols-[54px_1fr]">
-                <span className="pt-1.5 font-mono text-xs text-[oklch(0.82_0.15_68)]">{faq.n}</span>
+                <span className="pt-1.5 font-sans text-xs text-[oklch(0.82_0.15_68)]">{faq.n}</span>
                 <div>
                   <h3 className="text-xl font-medium tracking-[-0.02em]">{faq.question}</h3>
                   <p className="mt-3 max-w-[70ch] text-[14.5px] leading-[1.75] text-[oklch(0.8_0.008_75/78%)] [text-wrap:pretty]">{faq.answer}</p>
@@ -566,7 +1152,7 @@ export default function PrmptrLanding({
             <span className="bg-[oklch(0.16_0.012_55)] p-px prmptr-cut-button-wrap">
               <a
                 href={DOWNLOAD_URL}
-                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.16_0.012_55)] text-white hover:bg-[oklch(0.78_0.155_65)] hover:text-[oklch(0.16_0.012_55)]"
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-sans text-[13px] font-bold bg-[oklch(0.16_0.012_55)] text-white hover:bg-[oklch(0.78_0.155_65)] hover:text-[oklch(0.16_0.012_55)]"
               >
                 <DownloadSimple size={17} weight="bold" />
                 Download v0.1.0
@@ -575,14 +1161,14 @@ export default function PrmptrLanding({
             <span className="bg-[oklch(0.16_0.012_55/55%)] p-px prmptr-cut-button-wrap">
               <a
                 href={REPO_URL}
-                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-mono text-[13px] font-bold bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)] hover:bg-[oklch(0.16_0.012_55)] hover:text-white"
+                className="prmptr-cut-button inline-flex h-[54px] items-center gap-2.5 px-7 font-sans text-[13px] font-bold bg-[oklch(0.78_0.155_65)] text-[oklch(0.16_0.012_55)] hover:bg-[oklch(0.16_0.012_55)] hover:text-white"
               >
                 <GithubLogo size={17} weight="bold" />
                 Read the source
               </a>
             </span>
           </div>
-          <p className="mt-5 font-mono text-xs uppercase tracking-[0.16em] opacity-70">No account. 38 MB. Bring your own key, or don&apos;t.</p>
+          <p className="mt-5 font-sans text-xs uppercase tracking-[0.16em] opacity-70">No account. 38 MB. Bring your own key, or don&apos;t.</p>
         </div>
       </section>
 
@@ -594,7 +1180,7 @@ export default function PrmptrLanding({
           </div>
           <FooterColumn title="Project" links={[['GitHub', REPO_URL], ['Releases', `${REPO_URL}/releases`], ['Issues', `${REPO_URL}/issues`]]} />
           <FooterColumn title="Docs" links={[['README', `${REPO_URL}#readme`], ['Contributing', `${REPO_URL}/blob/main/CONTRIBUTING.md`], ['Security', `${REPO_URL}/security/policy`]]} />
-          <div className="flex flex-col gap-2.5 font-mono text-[12.5px] text-[oklch(0.8_0.008_75/72%)]">
+          <div className="flex flex-col gap-2.5 font-sans text-[12.5px] text-[oklch(0.8_0.008_75/72%)]">
             <p className="mb-1 text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.95_0.008_85)]">Providers</p>
             <span>OpenCode Zen</span>
             <span>Anthropic · OpenAI</span>
@@ -602,7 +1188,7 @@ export default function PrmptrLanding({
           </div>
         </div>
         <div className="mx-auto max-w-[1360px] px-5 pb-10 sm:px-8 lg:px-9">
-          <p className="flex flex-col justify-between gap-4 border-t border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)] pt-5 font-mono text-[11px] leading-[1.8] text-[oklch(0.8_0.008_75/60%)] sm:flex-row sm:gap-[30px]">
+          <p className="flex flex-col justify-between gap-4 border-t border-white/10 [box-shadow:inset_0_1px_0_oklch(0.115_0.004_60)] pt-5 font-sans text-[11px] leading-[1.8] text-[oklch(0.8_0.008_75/60%)] sm:flex-row sm:gap-[30px]">
             <span className="max-w-[80ch]">Use responsibly and in accordance with local consent laws for recording conversations. PRMPTR is a local tool — you are responsible for how you use its output. prmptr.cc</span>
             <span className="whitespace-nowrap">© 2026 · MIT License</span>
           </p>
@@ -614,7 +1200,7 @@ export default function PrmptrLanding({
 
 function FooterColumn({ title, links }: { title: string; links: Array<[string, string]> }) {
   return (
-    <div className="flex flex-col gap-2.5 font-mono text-[12.5px] text-[oklch(0.8_0.008_75/72%)]">
+    <div className="flex flex-col gap-2.5 font-sans text-[12.5px] text-[oklch(0.8_0.008_75/72%)]">
       <p className="mb-1 text-[10.5px] uppercase tracking-[0.2em] text-[oklch(0.95_0.008_85)]">{title}</p>
       {links.map(([label, href]) => <a key={label} href={href} className="transition-colors hover:text-[oklch(0.82_0.15_68)]">{label}</a>)}
     </div>

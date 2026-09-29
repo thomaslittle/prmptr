@@ -108,6 +108,7 @@ export interface LLMRequest {
 export type TriggerMode = "auto" | "manual" | "smart";
 export type ResponseStyle = "concise" | "detailed" | "ai-voice";
 export type Personality =
+    | "general"
     | "roast"
     | "witty"
     | "hype"
@@ -115,7 +116,6 @@ export type Personality =
     | "professional"
     | "unhinged"
     | "over-friendly"
-    | "valley-girl"
     | "grandpa"
     | "robot";
 
@@ -126,6 +126,7 @@ export interface PersonalityDef {
 }
 
 export const PERSONALITIES: PersonalityDef[] = [
+    { id: "general", name: "General", description: "Helpful, straightforward suggestions — no shtick" },
     { id: "roast", name: "Roast Master", description: "Burns, comebacks, and playful insults" },
     { id: "witty", name: "Witty", description: "Clever and sharp without the meanness" },
     { id: "hype", name: "Hype Man", description: "Supportive, encouraging, gasses you up" },
@@ -133,7 +134,6 @@ export const PERSONALITIES: PersonalityDef[] = [
     { id: "professional", name: "Professional", description: "Polished, factual, business-appropriate" },
     { id: "unhinged", name: "Unhinged", description: "No filter, maximum chaos energy" },
     { id: "over-friendly", name: "Over-Friendly", description: "Absurdly nice — everything is wonderful for no reason" },
-    { id: "valley-girl", name: "Valley Girl", description: "Like, totally casual, you know?" },
     { id: "grandpa", name: "Grandpa", description: "Folksy wisdom, 'back in my day' vibes" },
     { id: "robot", name: "Robot", description: "Cold, logical, minimal emotion" },
 ];
