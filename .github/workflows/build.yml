@@ -82,11 +82,10 @@ jobs:
           PRMPTR_TEST_MODELS="$RUNNER_TEMP/models" cargo test --test real_audio
       - name: Build installers
         uses: tauri-apps/tauri-action@v0
-        env:
-          # linuxdeploy ships as an AppImage; run it without FUSE on runners.
-          APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
-          args: --bundles ${{ runner.os == 'Windows' && 'nsis,msi' || 'appimage,deb' }}
+          # AppImage bundling needs FUSE/linuxdeploy, which GitHub's
+          # containers do not provide reliably; the .deb is the Linux artifact.
+          args: --bundles ${{ runner.os == 'Windows' && 'nsis,msi' || 'deb' }}
       - uses: actions/upload-artifact@v4
         with:
           name: prmptr-${{ runner.os }}
