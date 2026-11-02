@@ -159,7 +159,7 @@ pub fn models_from_snapshot(snapshot: &Value) -> Vec<LocalAiModel> {
         .into_iter()
         .filter_map(|r| Some((r["id"].as_str()?.to_string(), r)))
         .collect();
-    let mut out: Vec<LocalAiModel> = arr("models")
+    let out: Vec<LocalAiModel> = arr("models")
         .into_iter()
         .filter_map(|m| {
             let route = routes.get(m["routeId"].as_str()?)?;

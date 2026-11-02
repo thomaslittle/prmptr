@@ -59,7 +59,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev libudev-dev pkg-config cmake libpipewire-0.3-dev libxdo-dev libgbm-dev libdbus-1-dev
+            libasound2-dev libudev-dev pkg-config cmake libpipewire-0.3-dev libxdo-dev libgbm-dev libdbus-1-dev \
+            libfuse2t64
       - run: npm ci
       - name: Rust unit tests
         working-directory: src-tauri
@@ -75,6 +76,9 @@ jobs:
           PRMPTR_TEST_MODELS="$RUNNER_TEMP/models" cargo test --test real_audio
       - name: Build installers
         uses: tauri-apps/tauri-action@v0
+        env:
+          # linuxdeploy ships as an AppImage; run it without FUSE on runners.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
           args: --bundles ${{ runner.os == 'Windows' && 'nsis,msi' || 'appimage,deb' }}
       - uses: actions/upload-artifact@v4
