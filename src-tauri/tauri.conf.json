@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:43110",
-    "beforeBuildCommand": "npm run build && node scripts/stage-native-libs.mjs",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../out",
     "windows": {
       "staticVCRuntime": false

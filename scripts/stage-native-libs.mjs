@@ -11,12 +11,19 @@
 // sherpa-rs-sys first so its build script has downloaded the libraries even
 // on a clean checkout.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const tauriDir = join(root, "src-tauri");
+
+/** Platform-only bundle resources; the base config already has models/templates. */
+function writeBundleConfig(resources) {
+    const path = join(tauriDir, "tauri.bundle.local.conf.json");
+    writeFileSync(path, `${JSON.stringify({ bundle: { resources } }, null, 2)}\n`);
+    console.log(`stage-native-libs: wrote ${path}`);
+}
 
 function buildSherpa() {
     execFileSync("cargo", ["build", "--release", "-p", "sherpa-rs-sys"], {
@@ -73,6 +80,9 @@ if (process.platform === "win32") {
     }
     const crt = vcRedistDir();
     for (const dll of VC) copyFileSync(join(crt, dll), join(outDir, dll));
+    writeBundleConfig(
+        Object.fromEntries([...SHERPA, ...VC].map((dll) => [`runtime-dlls/${dll}`, dll])),
+    );
     console.log(`stage-native-libs: staged ${SHERPA.length + VC.length} DLLs into ${outDir}`);
 } else if (process.platform === "linux") {
     const outDir = join(tauriDir, "runtime-libs", "linux");
@@ -117,7 +127,11 @@ if (process.platform === "win32") {
         if (!existsSync(src)) throw new Error(`missing ${src} — the sherpa archive changed its layout`);
         copyFileSync(src, join(outDir, lib));
     }
+    writeBundleConfig(
+        Object.fromEntries(LIBS.map((lib) => [`runtime-libs/linux/${lib}`, lib])),
+    );
     console.log(`stage-native-libs: staged ${LIBS.length} shared libraries into ${outDir}`);
 } else {
+    writeBundleConfig({});
     console.log("stage-native-libs: no native libraries to stage for this platform");
 }

@@ -16,7 +16,7 @@
     "test:rust": "cd src-tauri && cargo test --lib",
     "test:all": "npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e && npm run test:rust",
     "tauri:dev:cuda": "tauri dev --features cuda",
-    "tauri:build": "tauri build"
+    "tauri:build": "node scripts/stage-native-libs.mjs && tauri build --config src-tauri/tauri.bundle.local.conf.json"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

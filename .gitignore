@@ -77,4 +77,5 @@ tauri-build.log
 /blob-report/
 /src-tauri/runtime-dlls/
 /src-tauri/runtime-libs/
+/src-tauri/tauri.bundle.local.conf.json
 /.hallmark/
