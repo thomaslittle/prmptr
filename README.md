@@ -40,12 +40,14 @@ Built with **Tauri 2 · Next.js 16 (static export) · React 19 · Rust**.
 ## Getting started
 
 Prerequisites: Node.js 22+, the Rust toolchain (MSVC on Windows), CMake, and the
-[Tauri prerequisites](https://tauri.app/start/prerequisites/).
+[Tauri prerequisites](https://tauri.app/start/prerequisites/). On Linux, system
+audio needs a PulseAudio or PipeWire monitor source and `parec` (package
+`pulseaudio-utils` on Debian/Ubuntu, or `pipewire-pulse`).
 
 ```bash
 npm install
 npm run tauri dev          # desktop app with hot reload (http://127.0.0.1:43110)
-npm run tauri build        # production installers (NSIS/MSI, AppImage/deb)
+npm run tauri build        # production installers (NSIS/MSI, .deb)
 npm run tauri:dev:gpu      # dev build with the Vulkan GPU backend (needs the Vulkan SDK)
 ```
 

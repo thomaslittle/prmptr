@@ -32,11 +32,13 @@ the Rust backend and is reached through narrow Tauri commands.
 ## Speech pipeline
 
 1. **Capture** — `cpal` 0.18 streams the microphone ("You") and the system
-   output via WASAPI loopback ("Them"). `transcription/conditioner.rs`
-   downmixes any channel count (6–8 channel loopback devices included) and
-   resamples to 16 kHz with rubato's band-limited FFT resampler — energy above
-   8 kHz is filtered rather than aliased into the speech band. Shared by local
-   and Deepgram capture. Per-channel mute is a live soft-mute.
+   output ("Them"): WASAPI loopback on Windows, and the PulseAudio/PipeWire
+   monitor source via `parec` on Linux (the monitor is captured by name, so it
+   follows the default sink). `transcription/conditioner.rs` downmixes any
+   channel count (6–8 channel loopback devices included) and resamples to
+   16 kHz with rubato's band-limited FFT resampler — energy above 8 kHz is
+   filtered rather than aliased into the speech band. Shared by local and
+   Deepgram capture. Per-channel mute is a live soft-mute.
 2. **VAD** — `transcription/vad.rs` feeds Silero VAD v6.2 (GGUF, bundled,
    1.2 MB) through transcribe.cpp and segments utterances with hysteresis
    (start ≥ 0.45, end after 300 ms < 0.30, 200 ms minimum, 10 s cap). Silence

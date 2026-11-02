@@ -147,8 +147,186 @@ pub struct TranscriptionResult {
 
 // ──────────────────────────── Audio Capture ────────────────────────────
 
+/// Linux system-audio capture through the PulseAudio/PipeWire monitor source.
+///
+/// cpal on Linux talks to ALSA, which does not expose a sink's monitor unless
+/// the Pulse ALSA plugin is installed, so drive `parec` (shipped with
+/// PulseAudio and with PipeWire's pulse compatibility) and feed its PCM into
+/// the same conditioner, ring buffer, level meter and mute path as a mic.
+#[cfg(target_os = "linux")]
+fn spawn_pulse_loopback(
+    device_name: Option<String>,
+    ring_buffer: Arc<StdMutex<AudioRingBuffer>>,
+    running: Arc<AtomicBool>,
+    mute_flag: Arc<AtomicBool>,
+    level_flag: Arc<AtomicMutex<f32>>,
+    label: &'static str,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+
+        let source = monitor_source(device_name.as_deref());
+        log::info!("[{label}] System audio via PulseAudio monitor '{source}'");
+        let mut conditioner = match crate::transcription::conditioner::AudioConditioner::new(48_000, 2) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("[{label}] {e}");
+                return;
+            }
+        };
+
+        // A monitor source can disappear when the default sink changes;
+        // restart a few times while the session is still running.
+        let mut restarts = 0;
+        while running.load(Ordering::Relaxed) && restarts < 5 {
+            let mut child = match Command::new("parec")
+                .args([
+                    "--device",
+                    source.as_str(),
+                    "--format=s16le",
+                    "--rate=48000",
+                    "--channels=2",
+                    "--raw",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(e) => {
+                    log::warn!(
+                        "[{label}] parec is unavailable ({e}); install pulseaudio-utils or pipewire-pulse"
+                    );
+                    return;
+                }
+            };
+            let Some(mut stdout) = child.stdout.take() else { return };
+            let mut bytes = vec![0u8; 8192];
+            while running.load(Ordering::Relaxed) {
+                let n = match stdout.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => {
+                        log::warn!("[{label}] Monitor read failed: {e}");
+                        break;
+                    }
+                };
+                let n = n - n % 2;
+                let mut samples = Vec::with_capacity(n / 2);
+                for pair in bytes[..n].chunks_exact(2) {
+                    samples.push(i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32_768.0);
+                }
+                if mute_flag.load(Ordering::Relaxed) {
+                    if let Ok(mut level) = level_flag.lock() {
+                        *level = 0.0;
+                    }
+                    continue;
+                }
+                let resampled = conditioner.push(&samples);
+                if resampled.is_empty() {
+                    continue;
+                }
+                if let Ok(mut level) = level_flag.lock() {
+                    *level = crate::transcription::conditioner::rms_level(&resampled);
+                }
+                if let Ok(mut buffer) = ring_buffer.lock() {
+                    buffer.push_samples(&resampled);
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            if running.load(Ordering::Relaxed) {
+                restarts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        log::info!("[{label}] PulseAudio monitor capture stopped");
+    })
+}
+
+/// Resolve the monitor source for the selected output.
+///
+/// The monitor source is `<sink>.monitor`. Match a specific selection against
+/// the sink names first, otherwise use the default sink, and fall back to
+/// `@DEFAULT_MONITOR@` (which parec resolves itself) when pactl is absent.
+#[cfg(target_os = "linux")]
+fn monitor_source(device_name: Option<&str>) -> String {
+    use std::process::Command;
+    let run = |args: &[&str]| {
+        Command::new("pactl")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let sinks = run(&["list", "short", "sinks"]).unwrap_or_default();
+    let default = run(&["get-default-sink"]).filter(|sink| !sink.is_empty());
+    pick_monitor(&sinks, device_name, default.as_deref())
+}
+
+/// Pick `<sink>.monitor` from `pactl list short sinks`, preferring a sink that
+/// matches the user's selection. Pure, so the table parsing is testable.
+#[cfg(target_os = "linux")]
+fn pick_monitor(sinks: &str, wanted: Option<&str>, default: Option<&str>) -> String {
+    let normalize = |value: &str| {
+        value
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if let Some(wanted) = wanted.map(str::trim).filter(|w| !w.is_empty()) {
+        let wanted = normalize(wanted);
+        for line in sinks.lines() {
+            let mut cols = line.split('\t');
+            let Some(_id) = cols.next() else { continue };
+            let Some(name) = cols.next() else { continue };
+            let name_norm = normalize(name);
+            if !wanted.is_empty()
+                && (name_norm.contains(&wanted) || wanted.contains(&name_norm))
+            {
+                return format!("{name}.monitor");
+            }
+        }
+    }
+    match default {
+        Some(sink) => format!("{sink}.monitor"),
+        None => "@DEFAULT_MONITOR@".to_string(),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::pick_monitor;
+
+    #[test]
+    fn picks_the_default_or_matching_monitor() {
+        let sinks = "0\talsa_output.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n\
+                     1\talsa_output.usb-speakers\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED";
+        assert_eq!(
+            pick_monitor(sinks, None, Some("alsa_output.pci-0000_00_1f.3.analog-stereo")),
+            "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+        );
+        assert_eq!(
+            pick_monitor(sinks, Some("USB Speakers"), Some("other")),
+            "alsa_output.usb-speakers.monitor",
+            "a selected output maps to its sink"
+        );
+        assert_eq!(pick_monitor("", None, None), "@DEFAULT_MONITOR@");
+        assert_eq!(
+            pick_monitor(sinks, Some("nope"), Some("fallback")),
+            "fallback.monitor"
+        );
+    }
+}
+
 /// Spawn a capture thread for a given device. For output devices, this uses
-/// WASAPI loopback on Windows.
+/// WASAPI loopback on Windows and the PulseAudio/PipeWire monitor on Linux.
 fn spawn_capture_thread(
     device_name: Option<String>,
     is_output: bool,
@@ -158,6 +336,13 @@ fn spawn_capture_thread(
     level_flag: Arc<AtomicMutex<f32>>,
     label: &'static str,
 ) -> std::thread::JoinHandle<()> {
+    // Linux exposes system audio as the sink's monitor source, not as a cpal
+    // output device; capture it with parec and feed the same pipeline.
+    #[cfg(target_os = "linux")]
+    if is_output {
+        return spawn_pulse_loopback(device_name, ring_buffer, running, mute_flag, level_flag, label);
+    }
+
     std::thread::spawn(move || {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -172,10 +357,9 @@ fn spawn_capture_thread(
                 .to_string()
         });
 
-        // Output-device loopback capture is a Windows WASAPI feature.
-        // On Linux/macOS, system-audio capture requires PulseAudio monitor
-        // sources or similar — gracefully skip for now.
-        if is_output && !cfg!(target_os = "windows") {
+        // Output-device loopback capture is WASAPI on Windows; Linux uses
+        // the PulseAudio/PipeWire monitor source (see spawn_pulse_loopback).
+        if is_output && !cfg!(any(target_os = "windows", target_os = "linux")) {
             log::warn!(
                 "[{label}] System-audio (loopback) capture is not yet supported on this platform. \
                  Only microphone input will be transcribed."
