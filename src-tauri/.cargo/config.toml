@@ -21,4 +21,4 @@ CMAKE_CUDA_FLAGS = "-Xcompiler=-fPIC -Xcompiler=/Zc:preprocessor"
 # Packages put the sherpa/ONNX shared libraries in /usr/lib/PRMPTR; find them
 # relative to the executable without needing LD_LIBRARY_PATH or ldconfig.
 [target.'cfg(target_os = "linux")']
-rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN/../lib/PRMPTR:$ORIGIN"]
+rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN/../lib/PRMPTR:$ORIGIN/../lib64/PRMPTR:$ORIGIN"]

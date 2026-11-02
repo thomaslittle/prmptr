@@ -26,6 +26,19 @@ function writeBundleConfig(resources) {
 }
 
 function buildSherpa() {
+    // rust-cache can restore compiled artifacts without the downloaded
+    // runtime directory, leaving the build script un-run and the libraries
+    // absent. `cargo clean -p` does not remove dependency build dirs, so clear
+    // sherpa-rs-sys's build output explicitly to force a fresh run.
+    for (const profile of ["debug", "release"]) {
+        const buildDir = join(tauriDir, "target", profile, "build");
+        if (!existsSync(buildDir)) continue;
+        for (const name of readdirSync(buildDir)) {
+            if (name.startsWith("sherpa-rs-sys-")) {
+                rmSync(join(buildDir, name), { recursive: true, force: true });
+            }
+        }
+    }
     execFileSync("cargo", ["build", "--release", "-p", "sherpa-rs-sys"], {
         cwd: tauriDir,
         stdio: "inherit",
@@ -106,20 +119,28 @@ if (process.platform === "win32") {
     }
 
     const roots = [
+        process.env.XDG_CACHE_HOME ? join(process.env.XDG_CACHE_HOME, "sherpa-rs") : null,
+        join(homedir(), ".cache", "sherpa-rs"),
         process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, "sherpa-rs") : null,
         join(homedir(), ".local", "share", "sherpa-rs"),
     ].filter((path) => path && existsSync(path));
 
-    let found = null;
-    for (const base of roots) {
-        found = findFile(base, "libsherpa-onnx-c-api.so");
-        if (found) break;
-    }
-    if (!found) {
-        throw new Error("sherpa-rs did not download its shared libraries; cannot bundle them");
+    // sherpa-rs-sys copies the libraries next to the built binary; fall back
+    // to its download cache if a future version changes that.
+    const targetDir = join(tauriDir, "target", "release");
+    let libDir = LIBS.every((lib) => existsSync(join(targetDir, lib))) ? targetDir : null;
+    if (!libDir) {
+        let found = null;
+        for (const base of roots) {
+            found = findFile(base, "libsherpa-onnx-c-api.so");
+            if (found) break;
+        }
+        if (!found) {
+            throw new Error("sherpa-rs did not stage its shared libraries; cannot bundle them");
+        }
+        libDir = dirname(found);
     }
 
-    const libDir = dirname(found);
     rmSync(outDir, { recursive: true, force: true });
     mkdirSync(outDir, { recursive: true });
     for (const lib of LIBS) {

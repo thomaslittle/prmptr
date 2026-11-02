@@ -64,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libasound2-dev libudev-dev pkg-config cmake libpipewire-0.3-dev libxdo-dev libgbm-dev libdbus-1-dev \
-            libfuse2t64 rpm
+            libfuse2t64 rpm cpio
       - run: npm ci
       - name: Refresh the sherpa-rs runtime download
         # rust-cache restores the compiled sherpa-rs-sys output but not its
@@ -97,14 +97,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pkg=$(mktemp -d)
-          dpkg-deb -x src-tauri/target/release/bundle/deb/*.deb "$pkg"
-          missing=$(ldd "$pkg/usr/bin/prmptr" | grep "not found" || true)
-          if [ -n "$missing" ]; then
-            echo "$missing" >&2
-            exit 1
-          fi
-          rpm -qpl src-tauri/target/release/bundle/rpm/*.rpm | grep -q "libsherpa-onnx-c-api.so"
+          check() {
+            local dir="$1" label="$2"
+            local missing
+            missing=$(ldd "$dir/usr/bin/prmptr" | grep "not found" || true)
+            if [ -n "$missing" ]; then
+              echo "$label:" >&2
+              echo "$missing" >&2
+              exit 1
+            fi
+          }
+
+          deb=$(mktemp -d)
+          dpkg-deb -x src-tauri/target/release/bundle/deb/*.deb "$deb"
+          check "$deb" "deb"
+
+          rpm=$(mktemp -d)
+          (cd "$rpm" && rpm2cpio "$OLDPWD"/src-tauri/target/release/bundle/rpm/*.rpm | cpio -idm --quiet)
+          check "$rpm" "rpm"
+          find "$rpm" -name "libsherpa-onnx-c-api.so" | grep -q .
           echo "Linux packages resolve libsherpa-onnx-c-api.so"
       - name: Attach installers to the release
         if: startsWith(github.ref, 'refs/tags/v')
