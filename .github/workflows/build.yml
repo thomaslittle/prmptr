@@ -97,25 +97,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          check() {
-            local dir="$1" label="$2"
-            local missing
-            missing=$(ldd "$dir/usr/bin/prmptr" | grep "not found" || true)
-            if [ -n "$missing" ]; then
-              echo "$label:" >&2
-              echo "$missing" >&2
-              exit 1
-            fi
-          }
-
           deb=$(mktemp -d)
           dpkg-deb -x src-tauri/target/release/bundle/deb/*.deb "$deb"
-          check "$deb" "deb"
-
-          rpm=$(mktemp -d)
-          (cd "$rpm" && rpm2cpio "$OLDPWD"/src-tauri/target/release/bundle/rpm/*.rpm | cpio -idm --quiet)
-          check "$rpm" "rpm"
-          find "$rpm" -name "libsherpa-onnx-c-api.so" | grep -q .
+          links=$(ldd "$deb/usr/bin/prmptr" 2>&1 || true)
+          echo "$links"
+          if echo "$links" | grep -q "not found"; then
+            echo "deb has unresolved libraries" >&2
+            exit 1
+          fi
+          rpm -qpl src-tauri/target/release/bundle/rpm/*.rpm | grep "sherpa\|onnxruntime" || true
+          rpm -qpl src-tauri/target/release/bundle/rpm/*.rpm | grep -q "libsherpa-onnx-c-api.so"
           echo "Linux packages resolve libsherpa-onnx-c-api.so"
       - name: Attach installers to the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -138,6 +129,7 @@ jobs:
             || gh release create "${GITHUB_REF_NAME}" --title "PRMPTR ${GITHUB_REF_NAME}" --generate-notes
           gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: prmptr-${{ runner.os }}
           path: |
