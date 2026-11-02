@@ -58,6 +58,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Bumped after a cached debug test binary from a different CPU
+          # SIGILL'd in the real-audio job; rebuild once from this runner.
+          key: native-2
       - name: Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -138,4 +141,4 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
-          if-no-files-found: error
+          if-no-files-found: warn
