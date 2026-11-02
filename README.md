@@ -47,7 +47,7 @@ audio needs a PulseAudio or PipeWire monitor source and `parec` (package
 ```bash
 npm install
 npm run tauri dev          # desktop app with hot reload (http://127.0.0.1:43110)
-npm run tauri build        # production installers (NSIS/MSI, .deb)
+npm run tauri build        # production installers (NSIS/MSI, .deb/.rpm)
 npm run tauri:dev:gpu      # dev build with the Vulkan GPU backend (needs the Vulkan SDK)
 ```
 
