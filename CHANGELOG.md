@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.2 — 2026-11-02
+
+### Linux launch diagnostics
+
+- **Fedora 44 + KDE Wayland + NVIDIA no longer disappears silently.**
+  WebKitGTK 2.54.0/2.54.1 has a DMA-BUF rendering regression (WebKit bug
+  324551, fixed in 2.54.2) that aborts with
+  `Gdk-Message: Error 71 (Protocol error)`. PRMPTR now checks the linked
+  WebKitGTK version, session type and NVIDIA driver *before* creating the
+  WebView, shows a native `kdialog`/`zenity` message with the exact
+  `dnf upgrade` command, and offers to start in compatibility mode
+  (`WEBKIT_DISABLE_DMABUF_RENDERER=1`).
+- `PRMPTR_WEBKIT_COMPAT=1` forces compatibility mode and `=0` skips the check.
+  Normal accelerated rendering is used once WebKitGTK is updated.
+- Unit tests cover the version/session/GPU decision. The Fedora RPM still
+  declares the normal WebKitGTK library dependency rather than pinning a
+  Fedora 44-only version, so installs on older Fedora releases remain valid.
+
 ## 0.2.1 — 2026-11-02
 
 ### Linux packages

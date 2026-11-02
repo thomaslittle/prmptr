@@ -6,6 +6,7 @@ pub mod commands;
 pub mod errors;
 pub mod session;
 pub mod transcription;
+pub mod webkit_compat;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -33,6 +34,10 @@ fn ensure_home() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Must run before Tauri creates the WebView: an affected WebKitGTK would
+    // abort on Wayland/NVIDIA with no message.
+    webkit_compat::preflight();
+
     ensure_home();
 
     let builder = tauri::Builder::default();

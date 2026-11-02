@@ -67,6 +67,20 @@ already have) and press **Analyze** (`Ctrl+Shift+Space`).
 | `PRMPTR_TEST_MODELS=<dir> cargo test --test real_audio` | Real audio through Silero VAD v6.2 + Parakeet |
 | `npm run test:all` | Everything above except the real-audio test |
 
+## Troubleshooting
+
+- **Fedora 44, KDE Wayland, NVIDIA: the window flashes and closes.** WebKitGTK
+  2.54.0/2.54.1 has an upstream DMA-BUF regression (WebKit bug 324551) fixed in
+  2.54.2. PRMPTR detects that combination before creating the WebView and
+  offers compatibility mode; updating is the real fix:
+  ```bash
+  sudo dnf upgrade webkit2gtk4.1 javascriptcoregtk4.1
+  ```
+  `PRMPTR_WEBKIT_COMPAT=0` skips the check; `=1` forces compatibility mode.
+- **No "Them" audio on Linux.** Install `parec`
+  (`sudo dnf install pulseaudio-utils` / `sudo apt install pulseaudio-utils`);
+  it records the default sink's monitor source.
+
 ## Privacy
 
 - Transcription is on-device unless you choose Deepgram.
