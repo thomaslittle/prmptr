@@ -52,9 +52,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# external / reference projects
-/screenpipe-assistant/
-
 # temp / debug
 UsersUserSitesprmptrtemp_assets.json
 nul
@@ -70,3 +67,13 @@ dev-server.log
 
 *.bak
 tauri-build.log
+/src-tauri/models/*.gguf
+!/src-tauri/models/silero-vad-v6.2-F32.gguf
+*.gguf.part
+
+# Playwright
+/playwright-report/
+/test-results/
+/blob-report/
+/src-tauri/runtime-dlls/
+/.hallmark/

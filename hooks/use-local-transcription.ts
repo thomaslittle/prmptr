@@ -1,19 +1,22 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { onLocalTranscription } from "@/lib/tauri";
+import { applySpeakerAliases, useSpeakerAliasStore } from "@/lib/stores/speaker-alias-store";
 import type { FeedItem } from "@/lib/types";
 
 export function useLocalTranscription() {
-    const [items, setItems] = useState<FeedItem[]>([]);
+    const [rawItems, setRawItems] = useState<FeedItem[]>([]);
+    const aliases = useSpeakerAliasStore((state) => state.aliases);
+    const clearAliases = useSpeakerAliasStore((state) => state.clear);
 
     useEffect(() => {
         let unlisten: (() => void) | null = null;
 
         onLocalTranscription((result) => {
-            setItems((prev) => {
-                // Show only finalized local-whisper events in the feed to avoid
-                // inaccurate interim hypotheses (e.g., "testing when...").
+            setRawItems((prev) => {
+                // Show only finalized events in the feed to avoid inaccurate
+                // interim hypotheses (e.g., "testing when...").
                 if (!result.is_final) {
                     return prev;
                 }
@@ -23,6 +26,7 @@ export function useLocalTranscription() {
                     id: result.id,
                     final: result.is_final,
                     device: result.device_type,
+                    speakerId: result.speaker_id,
                     timestamp: result.timestamp,
                     text: result.text,
                 });
@@ -35,22 +39,18 @@ export function useLocalTranscription() {
                     source: "Transcript",
                     deviceType: result.device_type,
                     isFinal: result.is_final,
-                    // Keep UI formatting stable: do not inject speaker metadata later.
-                    speaker: undefined,
-                    speakerLabel: undefined,
+                    // Diarized identity flows to the feed and into prompts
+                    // ([THEM: Speaker 2]); user aliases are applied on top.
+                    speaker: result.speaker_id ?? undefined,
+                    speakerLabel: result.speaker_label?.trim() || undefined,
                 };
 
-                // Update text in-place while preserving original metadata to avoid UI "reformat".
+                // Stable native ids are revision keys: take every mutable
+                // field so later text/speaker corrections are reflected.
                 const existingIdx = prev.findIndex((i) => i.id === result.id);
                 if (existingIdx >= 0) {
                     const updated = [...prev];
-                    const existing = updated[existingIdx];
-                    updated[existingIdx] = {
-                        ...existing,
-                        content: feedItem.content,
-                        timestamp: feedItem.timestamp,
-                        isFinal: feedItem.isFinal,
-                    };
+                    updated[existingIdx] = { ...updated[existingIdx], ...feedItem };
                     return updated;
                 }
 
@@ -62,7 +62,13 @@ export function useLocalTranscription() {
         return () => unlisten?.();
     }, []);
 
-    const clear = useCallback(() => setItems([]), []);
+    const items = useMemo(() => applySpeakerAliases(rawItems, aliases), [rawItems, aliases]);
+
+    // A new session starts a new speaker numbering, so names don't carry over.
+    const clear = useCallback(() => {
+        setRawItems([]);
+        clearAliases();
+    }, [clearAliases]);
 
     return { items, clear };
 }

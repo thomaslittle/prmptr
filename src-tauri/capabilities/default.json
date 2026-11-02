@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/packages/api/schema/capability-schema.json",
+  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for PRMPTR",
   "windows": [
@@ -20,6 +20,38 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-unregister-all",
     "store:default",
-    "mcp-bridge:default"
+    "mcp-bridge:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://api.anthropic.com/*"
+        },
+        {
+          "url": "https://api.openai.com/*"
+        },
+        {
+          "url": "https://api.groq.com/*"
+        },
+        {
+          "url": "https://api.cerebras.ai/*"
+        },
+        {
+          "url": "https://opencode.ai/*"
+        },
+        {
+          "url": "https://chatgpt.com/backend-api/*"
+        },
+        {
+          "url": "http://localhost:*/*"
+        },
+        {
+          "url": "http://127.0.0.1:*/*"
+        },
+        {
+          "url": "http://[::1]:*/*"
+        }
+      ]
+    }
   ]
 }

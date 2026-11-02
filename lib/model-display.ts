@@ -1,4 +1,4 @@
-import { LLMProvider } from "./types";
+import type { LLMProvider, SessionConfig } from "./types";
 import { zenModelDisplayName } from "./zen-models";
 
 /**
@@ -51,20 +51,19 @@ function capitalizeToken(token: string): string {
 export function modelDisplayName(id: string, provider?: LLMProvider): string {
     let value = id.trim();
 
-    // Zen / OpenCode CLI models have curated human names ("x-preview-f-free" →
+    // Zen models have curated human names ("x-preview-f-free" →
     // "Ox Alpha Free") that the generic tokenizer would mangle. Use them as-is.
-    if (provider === "zen" || provider === "opencode-cli") {
+    if (provider === "zen") {
         return zenModelDisplayName(id);
     }
 
     // Strip Anthropic's trailing date stamp before title-casing.
-    if (provider === "anthropic" || provider === "claude-cli") {
+    if (provider === "anthropic") {
         value = value.replace(CLAUDE_DATE_SUFFIX_RE, "");
     }
 
     // Keep OpenAI/Codex core model tokens joined by "-" (GPT-5.6, GPT-5.4).
-    const isOpenAiStyle =
-        provider === "openai" || provider === "codex-cli" || provider === "groq" || provider === "cerebras";
+    const isOpenAiStyle = provider === "openai" || provider === "groq" || provider === "cerebras";
     if (isOpenAiStyle) {
         const tokens = value.split("-").map(capitalizeToken);
         return tokens.join("-");
@@ -72,7 +71,7 @@ export function modelDisplayName(id: string, provider?: LLMProvider): string {
 
     // Claude-style: `claude-opus-4-5` → "Claude Opus 4.5".
     // Collapse the escaped 4-5/4-5-2 version into a dotted group, then title-case.
-    if (provider === "anthropic" || provider === "claude-cli") {
+    if (provider === "anthropic") {
         const parts = value.split("-");
         const version: string[] = [];
         const head: string[] = [];
@@ -93,6 +92,19 @@ export function modelDisplayName(id: string, provider?: LLMProvider): string {
         .split(/[-_]/)
         .map(capitalizeToken)
         .join(" ");
+}
+
+/**
+ * Human label for the session's selected model. "Your AI apps" model ids are
+ * opaque OriginLM ids, so they show the name OriginLM reported instead.
+ */
+export function sessionModelLabel(config: Pick<SessionConfig, "provider" | "model" | "localAi">): string {
+    if (config.provider === "local-ai") {
+        return config.localAi?.name || config.localAi?.nativeId || config.model || "No model selected";
+    }
+    if (!config.model) return "No model selected";
+    if (config.provider === "lmstudio" || config.provider === "zen") return config.model;
+    return modelDisplayName(config.model, config.provider);
 }
 
 /** Extract a comparable numeric version (major/minor) from a model id, or null. */
@@ -120,7 +132,7 @@ export function modelVersionInfo(id: string, provider: LLMProvider, siblings: re
     // Claude: only the newest family (major == max major) is current. The user
     // expects e.g. Fable 5 / Opus 5 / Sonnet 5 to stay current and everything
     // older to collapse under Legacy.
-    if (provider === "anthropic" || provider === "claude-cli") {
+    if (provider === "anthropic") {
         let maxMajor = version.major;
         for (const sibling of siblings) {
             const v = extractVersion(sibling);

@@ -27,7 +27,6 @@ function isBanter(sentence: string): boolean {
 
 function scoreSentence(sentence: string): number {
     const s = sentence.trim();
-    const lower = s.toLowerCase();
     let score = 0;
 
     if (!s.endsWith("?")) score += 1;

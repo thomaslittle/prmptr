@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { SessionConfig, ResponseEntry } from "@/lib/types";
+import { migrateSessionConfig } from "@/lib/model-migration";
 
 const DEFAULT_SESSION: SessionConfig = {
     context:
@@ -55,6 +56,11 @@ export const useSessionStore = create<SessionState>()(
                 config: state.config,
                 currentSessionId: state.currentSessionId,
             }),
+            merge: (persisted, current) => {
+                const p = (persisted ?? {}) as Partial<SessionState>;
+                const config = migrateSessionConfig({ ...DEFAULT_SESSION, ...p.config });
+                return { ...current, ...p, config };
+            },
         }
     )
 );

@@ -1,18 +1,21 @@
 "use client";
 
 import { useMemo, useState, useRef, useEffect, useCallback } from "react";
-import { MagnifyingGlass, Star, CaretDown, CaretRight } from "@phosphor-icons/react";
+import { MagnifyingGlass, Star, CaretDown, CaretRight, AppWindow, CircleNotch } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { LLMProvider } from "@/lib/types";
-import { ClaudeAI, OpenAI, OpenCodeIcon, LMStudioIcon } from "@/components/provider-icons";
+import type { LLMProvider, LocalAiRoute } from "@/lib/types";
+import { ClaudeAI, OpenAI, OpenCodeIcon, LMStudioIcon, GrokIcon, CursorIcon } from "@/components/provider-icons";
 import { modelDisplayName, modelVersionInfo, compareModelVersions } from "@/lib/model-display";
 
-interface PickableModel {
+export interface PickableModel {
     id: string;
     name: string;
     provider: LLMProvider;
-    subProvider?: string;
+    /** Display group within the provider (for "local-ai": the AI app name). */
+    group?: string;
+    /** OriginLM route for "local-ai" models. */
+    localAi?: LocalAiRoute;
 }
 
 type ProviderIconComponent = React.ComponentType<{ className?: string }>;
@@ -21,8 +24,13 @@ interface ModelPickerProps {
     models: PickableModel[];
     value?: string;
     providerValue?: LLMProvider;
-    subProviderValue?: string;
+    /** OriginLM route id of the current "local-ai" selection. */
+    routeValue?: string;
     onSelect: (model: PickableModel) => void;
+    /** Called whenever the picker opens (used to lazily scan Your AI apps). */
+    onOpen?: () => void;
+    /** Your AI apps scan in flight: show the rail with a scanning message. */
+    localAiScanning?: boolean;
     className?: string;
 }
 
@@ -30,7 +38,9 @@ interface RowEntry {
     id: string;
     provider: LLMProvider;
     displayName: string;
-    groupSubProvider?: string;
+    group?: string;
+    routeId?: string;
+    nativeId?: string;
     isLegacy: boolean;
     version: { major: number; minor: number } | null;
 }
@@ -38,9 +48,7 @@ interface RowEntry {
 const PROVIDER_META: Partial<Record<LLMProvider, { label: string; monogram: string; icon?: ProviderIconComponent }>> = {
     lmstudio: { label: "LM Studio", monogram: "LM", icon: LMStudioIcon },
     zen: { label: "OpenCode Zen", monogram: "Z", icon: OpenCodeIcon },
-    "claude-cli": { label: "Claude Code", monogram: "C", icon: ClaudeAI },
-    "codex-cli": { label: "Codex (ChatGPT)", monogram: "X", icon: OpenAI },
-    "opencode-cli": { label: "OpenCode", monogram: "O", icon: OpenCodeIcon },
+    "local-ai": { label: "Your AI apps", monogram: "AI", icon: YourAiAppsIcon },
     anthropic: { label: "Anthropic", monogram: "A", icon: ClaudeAI },
     openai: { label: "OpenAI", monogram: "O", icon: OpenAI },
     groq: { label: "Groq", monogram: "G", icon: OpenAI },
@@ -56,32 +64,37 @@ function providerMeta(provider: LLMProvider) {
     };
 }
 
-// Zen (API key) and opencode-cli (CLI) are both the same OpenCode gateway, so
-// they collapse into ONE rail/group. Internally each model keeps its real
-// `provider` so LLM routing picks the right credential; the picker groups them
-// under a single "opencode" group for display and filtering.
-type OpenCodeGroup = "opencode";
-type GroupKey = LLMProvider | OpenCodeGroup;
-
-const OPENCODE_GROUP_KEY: OpenCodeGroup = "opencode";
-
-function isOpenCodeProvider(provider: LLMProvider): boolean {
-    return provider === "zen" || provider === "opencode-cli";
+function YourAiAppsIcon({ className }: { className?: string }) {
+    return <AppWindow weight="duotone" className={className} />;
 }
 
-function groupKeyOfProvider(provider: LLMProvider): GroupKey {
-    return isOpenCodeProvider(provider) ? OPENCODE_GROUP_KEY : provider;
+/** Brand icon for an AI app reported by OriginLM (matched on its display name). */
+function appIcon(appName: string | undefined, className: string): React.ReactElement | null {
+    const name = (appName ?? "").toLowerCase();
+    if (name.includes("claude")) return <ClaudeAI className={className} />;
+    if (name.includes("codex") || name.includes("chatgpt") || name.includes("openai")) return <OpenAI className={className} />;
+    if (name.includes("opencode")) return <OpenCodeIcon className={className} />;
+    if (name.includes("lm studio") || name.includes("lmstudio")) return <LMStudioIcon className={className} />;
+    if (name.includes("grok")) return <GrokIcon className={className} />;
+    if (name.includes("cursor")) return <CursorIcon className={className} />;
+    return null;
 }
+
+type GroupKey = LLMProvider;
 
 function groupMeta(group: GroupKey) {
-    if (group === OPENCODE_GROUP_KEY) {
-        return { label: "OpenCode", monogram: "O", icon: OpenCodeIcon };
-    }
     return providerMeta(group);
 }
 
-function ProviderBrandIcon({ provider, className }: { provider: LLMProvider; className?: string }) {
+/** Identity of one pickable row; local-ai ids are only unique per route. */
+function rowKey(provider: LLMProvider, id: string, routeId?: string): string {
+    return provider === "local-ai" ? `${provider}:${routeId ?? ""}:${id}` : `${provider}:${id}`;
+}
+
+function ProviderBrandIcon({ provider, app, className }: { provider: LLMProvider; app?: string; className?: string }) {
     const meta = providerMeta(provider);
+    const appEl = provider === "local-ai" ? appIcon(app, cn("shrink-0", className)) : null;
+    if (appEl) return appEl;
     if (meta.icon) {
         const Icon = meta.icon;
         return <Icon className={cn("shrink-0", className)} />;
@@ -138,7 +151,16 @@ function loadFavorites(): Set<FavoriteKey> {
     }
 }
 
-export function ModelPicker({ models, value, providerValue, subProviderValue, onSelect, className }: ModelPickerProps) {
+export function ModelPicker({
+    models,
+    value,
+    providerValue,
+    routeValue,
+    onSelect,
+    onOpen,
+    localAiScanning = false,
+    className,
+}: ModelPickerProps) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [activeProvider, setActiveProvider] = useState<GroupKey | "favorites">("favorites");
@@ -147,13 +169,13 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
     const inputRef = useRef<HTMLInputElement>(null);
     const [favorites, setFavorites] = useState<Set<FavoriteKey>>(loadFavorites);
 
-    const favoriteKey = useCallback((provider: LLMProvider, id: string) => `${provider}:${id}`, []);
+    const favoriteKey = useCallback((row: RowEntry) => rowKey(row.provider, row.id, row.routeId), []);
 
     const toggleFavorite = useCallback(
-        (provider: LLMProvider, id: string) => {
+        (row: RowEntry) => {
             setFavorites((prev) => {
                 const next = new Set(prev);
-                const key = favoriteKey(provider, id);
+                const key = favoriteKey(row);
                 if (next.has(key)) next.delete(key);
                 else next.add(key);
                 try {
@@ -170,16 +192,17 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
     const providerOrder = useMemo(() => {
         const seen: GroupKey[] = [];
         for (const m of models) {
-            const g = groupKeyOfProvider(m.provider);
-            if (!seen.includes(g)) seen.push(g);
+            if (!seen.includes(m.provider)) seen.push(m.provider);
         }
+        // Keep the Your AI apps rail visible while its first scan runs.
+        if (localAiScanning && !seen.includes("local-ai")) seen.push("local-ai");
         return seen;
-    }, [models]);
+    }, [models, localAiScanning]);
 
     const grouped = useMemo(() => {
-        const map: Record<GroupKey, PickableModel[]> = {} as Record<GroupKey, PickableModel[]>;
+        const map: Partial<Record<GroupKey, PickableModel[]>> = {};
         for (const m of models) {
-            (map[groupKeyOfProvider(m.provider)] ??= []).push(m);
+            (map[m.provider] ??= []).push(m);
         }
         return map;
     }, [models]);
@@ -190,25 +213,27 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
     const entriesForProvider = useCallback(
         (group: GroupKey): RowEntry[] => {
             const list = grouped[group] ?? [];
-            // Dedupe by (provider, subProvider, id) — already done upstream in
-            // `availableModels`, but the group merge can surface identical ids
-            // across zen + opencode-cli that we must not render twice.
+            const ids = list.map((x) => x.id);
+            // Defensive dedupe; `availableModels` already dedupes upstream.
             const seen = new Set<string>();
             const rows: RowEntry[] = [];
             for (const m of list) {
-                const key = `${m.provider}:${m.subProvider ?? ""}:${m.id}`;
+                const key = rowKey(m.provider, m.id, m.localAi?.routeId);
                 if (seen.has(key)) continue;
                 seen.add(key);
-                // Version/legacy is computed per-model using its own provider.
-                const ids = (grouped[group] ?? [])
-                    .filter((x) => x.provider === m.provider)
-                    .map((x) => x.id);
-                const v = modelVersionInfo(m.id, m.provider, ids);
+                // OriginLM ids are opaque and span many apps: no version
+                // heuristics, keep the backend's per-app order.
+                const v =
+                    m.provider === "local-ai"
+                        ? { version: null, isLegacy: false }
+                        : modelVersionInfo(m.id, m.provider, ids);
                 rows.push({
                     id: m.id,
                     provider: m.provider,
                     displayName: m.name || modelDisplayName(m.id, m.provider),
-                    groupSubProvider: m.subProvider,
+                    group: m.group,
+                    routeId: m.localAi?.routeId,
+                    nativeId: m.localAi?.nativeId,
                     isLegacy: v.isLegacy,
                     version: v.version,
                 });
@@ -224,13 +249,15 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
         if (activeProvider === "favorites") {
             for (const p of providerOrder) {
                 for (const row of entriesForProvider(p)) {
-                    if (favorites.has(favoriteKey(row.provider, row.id))) rows.push(row);
+                    if (favorites.has(favoriteKey(row))) rows.push(row);
                 }
             }
         } else {
             rows = entriesForProvider(activeProvider);
         }
         rows = rows.filter((r) => !r.isLegacy);
+        // Your AI apps rows stay grouped by app in backend order.
+        if (activeProvider === "local-ai") return rows;
         return rows.sort((a, b) => compareModelVersions(a.version, b.version) || a.displayName.localeCompare(b.displayName));
     }, [activeProvider, providerOrder, favorites, favoriteKey, entriesForProvider]);
 
@@ -247,14 +274,13 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
         if (!q) return rows;
         return rows.filter((r) => {
             const meta = providerMeta(r.provider);
-            const group = groupMeta(groupKeyOfProvider(r.provider));
             return (
                 r.displayName.toLowerCase().includes(q) ||
                 r.id.toLowerCase().includes(q) ||
                 r.provider.toLowerCase().includes(q) ||
-                (r.groupSubProvider?.toLowerCase().includes(q) ?? false) ||
-                meta.label.toLowerCase().includes(q) ||
-                group.label.toLowerCase().includes(q)
+                (r.group?.toLowerCase().includes(q) ?? false) ||
+                (r.nativeId?.toLowerCase().includes(q) ?? false) ||
+                meta.label.toLowerCase().includes(q)
             );
         });
     }, [query]);
@@ -273,8 +299,8 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
         (row: RowEntry) =>
             row.id === value &&
             row.provider === providerValue &&
-            (row.groupSubProvider ?? undefined) === (subProviderValue ?? undefined),
-        [value, providerValue, subProviderValue]
+            (row.provider !== "local-ai" || row.routeId === routeValue),
+        [value, providerValue, routeValue]
     );
 
     const selectedIndex = useMemo(() => {
@@ -298,9 +324,11 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
         (next: boolean) => {
             setOpen(next);
             if (next) {
+                onOpen?.();
                 const initial =
-                    (providerValue ? groupKeyOfProvider(providerValue) : undefined) ??
-                    (favorites.size > 0 ? "favorites" : providerOrder[0]);
+                    (providerValue && (providerOrder.includes(providerValue) || providerValue === "local-ai")
+                        ? providerValue
+                        : undefined) ?? (favorites.size > 0 ? "favorites" : providerOrder[0]);
                 setActiveProvider(initial);
                 setIndex(0);
                 // Start with the legacy section collapsed unless the current
@@ -311,18 +339,15 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
                 reset();
             }
         },
-        [favorites.size, providerValue, providerOrder, reset]
+        [favorites.size, providerValue, providerOrder, reset, onOpen]
     );
 
     const commit = useCallback(
         (entry: RowEntry) => {
-            const candidates = grouped[groupKeyOfProvider(entry.provider)] ?? [];
+            const candidates = grouped[entry.provider] ?? [];
             const model = candidates.find(
-                (m) =>
-                    m.id === entry.id &&
-                    m.provider === entry.provider &&
-                    (m.subProvider ?? undefined) === (entry.groupSubProvider ?? undefined)
-            ) ?? candidates.find((m) => m.id === entry.id && m.provider === entry.provider);
+                (m) => rowKey(m.provider, m.id, m.localAi?.routeId) === rowKey(entry.provider, entry.id, entry.routeId)
+            );
             if (!model) return;
             onSelect(model);
             setOpen(false);
@@ -382,8 +407,9 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
         ? models.find(
               (m) =>
                   m.id === value &&
-                  (m.subProvider ?? undefined) === (subProviderValue ?? undefined)
-          ) ?? models.find((m) => m.id === value)
+                  m.provider === providerValue &&
+                  (m.provider !== "local-ai" || m.localAi?.routeId === routeValue)
+          ) ?? (providerValue === "local-ai" ? undefined : models.find((m) => m.id === value && m.provider !== "local-ai"))
         : undefined;
     const currentDisplayName = currentModel
         ? currentModel.name || modelDisplayName(currentModel.id, currentModel.provider)
@@ -402,11 +428,11 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
                     >
                         {currentModel ? (
                             <>
-                                <ProviderBrandIcon provider={currentModel.provider} className="size-4" />
+                                <ProviderBrandIcon provider={currentModel.provider} app={currentModel.group} className="size-4" />
                                 <span className="truncate flex-1 text-left">{currentDisplayName}</span>
                             </>
                         ) : (
-                            <span className="text-muted-foreground">Select a model</span>
+                            <span className="flex-1 truncate text-left text-muted-foreground">Select a model</span>
                         )}
                         <CaretDown weight="bold" className="shrink-0 size-3 text-muted-foreground" />
                     </button>
@@ -489,18 +515,41 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
                         {/* Model list */}
                         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1.5 pr-1" role="listbox" aria-label="Models">
                             {visibleCurrent.length === 0 && visibleLegacy.length === 0 ? (
-                                <p className="px-3 py-6 text-xs text-muted-foreground/60">
-                                    {activeProvider === "favorites" ? "No favorites yet." : "No models found."}
-                                </p>
+                                activeProvider === "local-ai" && localAiScanning ? (
+                                    <p className="flex items-center gap-2 px-3 py-6 text-xs text-muted-foreground/60">
+                                        <CircleNotch className="size-3.5 animate-spin" aria-hidden />
+                                        Looking for your AI apps…
+                                    </p>
+                                ) : (
+                                    <p className="px-3 py-6 text-xs text-muted-foreground/60">
+                                        {activeProvider === "favorites"
+                                            ? "No favorites yet."
+                                            : activeProvider === "local-ai"
+                                              ? "No signed-in AI apps found. Scan again from Settings → Providers."
+                                              : "No models found."}
+                                    </p>
+                                )
                             ) : (
                                 <>
                                     {visibleCurrent.map((row, i) => {
                                         const isSelected = matchesCurrent(row);
                                         const isActive = activeIndex === i;
-                                        const isFavorite = favorites.has(favoriteKey(row.provider, row.id));
+                                        const isFavorite = favorites.has(favoriteKey(row));
+                                        const prev = visibleCurrent[i - 1];
+                                        const showAppHeader =
+                                            activeProvider === "local-ai" && (!prev || prev.group !== row.group);
                                         return (
+                                            <div key={favoriteKey(row)} role="presentation">
+                                            {showAppHeader && (
+                                                <div
+                                                    role="presentation"
+                                                    className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70"
+                                                >
+                                                    <ProviderBrandIcon provider="local-ai" app={row.group} className="size-3" />
+                                                    {row.group || "Other"}
+                                                </div>
+                                            )}
                                             <Row
-                                                key={`${row.provider}:${row.groupSubProvider ?? ""}:${row.id}`}
                                                 row={row}
                                                 index={i}
                                                 isSelected={isSelected}
@@ -510,9 +559,10 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
                                                 onHover={() => setIndex(i)}
                                                 onToggleFavorite={(e) => {
                                                     e.stopPropagation();
-                                                    toggleFavorite(row.provider, row.id);
+                                                    toggleFavorite(row);
                                                 }}
                                             />
+                                            </div>
                                         );
                                     })}
 
@@ -540,10 +590,10 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
                                                     const offset = visibleCurrent.length + 1 + j;
                                                     const isSelected = matchesCurrent(row);
                                                     const isActive = activeIndex === offset;
-                                                    const isFavorite = favorites.has(favoriteKey(row.provider, row.id));
+                                                    const isFavorite = favorites.has(favoriteKey(row));
                                                     return (
                                                         <Row
-                                                            key={`${row.provider}:${row.groupSubProvider ?? ""}:${row.id}`}
+                                                            key={favoriteKey(row)}
                                                             row={row}
                                                             index={offset}
                                                             isSelected={isSelected}
@@ -553,7 +603,7 @@ export function ModelPicker({ models, value, providerValue, subProviderValue, on
                                                             onHover={() => setIndex(offset)}
                                                             onToggleFavorite={(e) => {
                                                                 e.stopPropagation();
-                                                                toggleFavorite(row.provider, row.id);
+                                                                toggleFavorite(row);
                                                             }}
                                                         />
                                                     );
@@ -608,9 +658,11 @@ function Row({
             <div className="min-w-0 flex-1 text-left">
                 <span className="min-w-0 truncate text-xs font-medium leading-snug">{row.displayName}</span>
                 <div className="mt-1 flex items-center gap-1.5">
-                    <ProviderBrandIcon provider={row.provider} className="size-3" />
+                    <ProviderBrandIcon provider={row.provider} app={row.group} className="size-3" />
                     <span className="truncate text-xs leading-snug text-muted-foreground/70">
-                        {row.groupSubProvider ? `${meta.label} · ${row.groupSubProvider}` : `${meta.label} · ${row.provider}`}
+                        {row.provider === "local-ai"
+                            ? [row.group || meta.label, row.nativeId].filter(Boolean).join(" · ")
+                            : `${meta.label} · ${row.provider}`}
                     </span>
                 </div>
             </div>

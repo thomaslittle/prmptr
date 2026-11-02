@@ -1,110 +1,88 @@
 # PRMPTR
 
-Real-time AI conversation wingman. PRMPTR listens to your microphone and
-system audio, transcribes everything **locally on-device**, and streams
-context-aware response suggestions — roasts, comebacks, answers, facts — to an
-always-on-top overlay in the personality you pick. You always have the right
-thing to say.
+Real-time AI conversation wingman. PRMPTR listens to your microphone ("You")
+and system audio ("Them"), transcribes both **on your device**, and streams
+context-aware suggestions — answers, comebacks, facts — in the personality you
+pick.
 
-Built with **Tauri v2 + Next.js 16 + React 19 + Rust**.
+Built with **Tauri 2 · Next.js 16 (static export) · React 19 · Rust**.
 
 ## Highlights
 
-- **100% local transcription (default)** — no API key needed to start
-  - **Moonshine** engine: 2026's best live-speech STT — matches Whisper
-    Large-v3 accuracy at 6× fewer params, ~50–270ms latency, MIT licensed.
-    One-click ~240MB model download.
-  - **Whisper** engine via whisper.cpp with downloadable models up to
-    **Large-v3-Turbo** (quantized). The app auto-selects the best installed
-    model.
-  - **GPU acceleration** on NVIDIA cards (CUDA) with full detection
-    diagnostics and setup hints built into Settings.
-- **10 personalities** — Roast Master, Unhinged, Witty, Hype Man, Valley Girl,
-  Robot and more, each with tuned prompt engineering
-- **OpenCode Zen** provider — paste one key and get every model your account
-  can access, including the free tier (Ox Alpha Free, Big Pickle, MiMo-V2.5,
-  Hy3, Nemotron), plus Anthropic / OpenAI / Groq / Cerebras or a local
-  LM Studio server
-- **Global shortcuts** — trigger analysis hands-free from any app
-- **Voice replies** — local Sherpa/Kokoro TTS or your own HTTP endpoint
-- **Session history** — every analysis saved locally; markdown-rendered
-  responses with section badges
-
-## Prerequisites
-
-- Node.js 20+
-- Rust toolchain (`rustup`) with the MSVC target on Windows
-- Tauri v2 system dependencies ([guide](https://tauri.app/start/prerequisites/))
-- For GPU-accelerated transcription (optional): NVIDIA GPU + CUDA toolkit +
-  CMake. The app's Settings → Capture panel tells you exactly what's missing
-  and how to fix it.
-- Screen capture via [screenpipe](https://screenpipe.com) is optional — the
-  app can install it for you, but audio-only transcription works without it.
+- **On-device speech recognition** — [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)
+  runs GGUF models locally; nothing leaves your machine.
+  - **Parakeet Unified (English)** by default: ~1.6% WER, punctuated, >15× real
+    time on an ordinary desktop CPU.
+  - Also: Parakeet v3 (25 European languages), Whisper Large v3 Turbo
+    (99 languages), Moonshine Small and Parakeet 110M for low-power machines.
+  - **Silero VAD v6.2** gates the models so silence and room noise never reach
+    them (no "Thank you." hallucinations).
+  - Models download on demand from pinned revisions and are SHA-256 verified.
+  - **Personal glossary** — names and jargon bias recognition, and known
+    mishearings are corrected (`Saoirse = Sayers`).
+  - **Speaker names** — rename "Speaker 2" to "Sarah" in the live feed; the
+    AI sees who said what.
+  - Optional GPU builds via Vulkan (NVIDIA/AMD/Intel) or CUDA.
+- **Deepgram** as the one cloud transcription option.
+- **Your AI apps** — use the subscriptions you already have (Claude Code, Codex,
+  OpenCode, Gemini CLI, Ollama, LM Studio…) through
+  [OriginLM](https://github.com/thomaslittle/originlm). Turns run *through* the
+  installed client; PRMPTR never reads or copies your logins.
+- **API providers** — Anthropic (Claude Haiku/Sonnet/Opus 5.5), OpenAI
+  (GPT-6.x), Groq, Cerebras, OpenCode Zen, or a local LM Studio server. Live
+  model lists come from each provider; Groq ⇄ Cerebras fail over on rate limits.
+- **Always-on-top overlay** (opt-in) — suggestions stream into a small
+  floating window that's hidden from screen sharing; `Ctrl+Shift+H` show/hide,
+  `Ctrl+Shift+C` click-through.
+- **10 personalities**, global shortcuts, optional screenshot context for vision
+  models, local or HTTP text-to-speech, and session history stored locally.
 
 ## Getting started
 
+Prerequisites: Node.js 22+, the Rust toolchain (MSVC on Windows), CMake, and the
+[Tauri prerequisites](https://tauri.app/start/prerequisites/).
+
 ```bash
 npm install
-
-# Dev (Next.js dev server on http://127.0.0.1:43110 + Tauri shell)
-npm run tauri dev
-
-# Production build
-npm run tauri build
+npm run tauri dev          # desktop app with hot reload (http://127.0.0.1:43110)
+npm run tauri build        # production installers (NSIS/MSI, AppImage/deb)
+npm run tauri:dev:gpu      # dev build with the Vulkan GPU backend (needs the Vulkan SDK)
 ```
 
-| Script | What it does |
+First run: **Settings → Capture & Voice** → download Parakeet Unified (731 MB,
+one time) → pick your microphone and output device → **Start**. Then pick a
+model under **Providers & Models** (or let *Your AI apps* find the ones you
+already have) and press **Analyze** (`Ctrl+Shift+Space`).
+
+## Testing
+
+| Command | What it covers |
 |---|---|
-| `npm run dev` | Next.js dev server bound to `127.0.0.1` only |
-| `npm run tauri dev` | Full desktop app in dev mode |
-| `npm run tauri build` | Production installer |
-| `npm run typecheck` | Strict TypeScript check (`tsc --noEmit`) |
-| `npm run lint` | ESLint (flat config) |
-| `npm test` | Vitest unit tests |
+| `npm run typecheck` / `npm run lint` | TypeScript 6 strict, ESLint 10 |
+| `npm test` | Vitest unit tests (prompting, model migration, providers, …) |
+| `npm run test:e2e` | Playwright against the production static export with an in-page fake of the Rust backend and intercepted provider APIs |
+| `npm run test:rust` | Rust unit tests (VAD segmenter, model catalog, OriginLM mapping, …) |
+| `PRMPTR_TEST_MODELS=<dir> cargo test --test real_audio` | Real audio through Silero VAD v6.2 + Parakeet |
+| `npm run test:all` | Everything above except the real-audio test |
 
-## First-run setup
+## Privacy
 
-1. Launch the app; open **Settings → Capture**.
-2. Transcription mode defaults to **Local (Free)** — works instantly with the
-   bundled model, no keys required:
-   - Pick your **engine**: Moonshine (recommended — download once, then enjoy
-     near-instant transcriptions) or Whisper (choose a model from Tiny up to
-     Large-v3-Turbo quantized).
-   - NVIDIA GPU? Flip **Use GPU** on. If CUDA isn't detected, the info
-     tooltip lists exactly what to install/configure.
-3. Configure your input ("You") and output ("Them") audio devices.
-4. Add an LLM provider key under **Settings → Providers** — OpenCode Zen gets
-   you a whole catalog including free models — or point at a locally running
-   LM Studio server.
-5. Choose a personality + response style and start a session.
+- Transcription is on-device unless you choose Deepgram.
+- Transcripts and history stay in local IndexedDB; nothing is synced.
+- API keys live in a Tauri-managed store file, never in localStorage.
+- *Your AI apps* never exposes subscription credentials to PRMPTR.
+- The webview can only reach the provider APIs and loopback addresses allowed
+  in `src-tauri/capabilities/default.json`.
 
-## Privacy model
-
-- **Local-first by default**: on-device transcription (Whisper/Moonshine),
-  nothing leaves your machine unless you explicitly switch to cloud
-  transcription or enable vision uploads.
-- Transcripts and session history stay **on your machine** (IndexedDB).
-  Nothing is synced.
-- Secrets never touch localStorage — they live in a Tauri-managed secure
-  store, migrated automatically from older versions.
-- All localhost API routes are loopback-only and reject cross-site requests;
-  the Deepgram key (if you use cloud mode) is redacted from all logs.
-
-See [docs/architecture.md](docs/architecture.md) for the security model and
-LLM-provider architecture.
+See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Project structure
 
 ```
-app/            Next.js routes (incl. guarded local-only API routes)
-components/     React UI (dashboard, ai-response, settings, overlay)
-hooks/          Feed, session history, shortcut hooks
-lib/            Zustand stores, LLM providers, prompt builder, guards
-src-tauri/      Rust backend: capture, Whisper/Moonshine engines, TTS
-docs/           Architecture notes
+app/            Next.js routes (static export — no API routes)
+components/     React UI (dashboard, analysis, settings, model picker)
+lib/            Stores, LLM client/providers, Tauri bridge, prompt builder
+src-tauri/      Rust: audio capture, transcribe.cpp engine + VAD, Deepgram,
+                OriginLM bridge, screenshots, TTS
+e2e/            Playwright suite and the fake Rust backend
 ```
-
-Before changing LLM-related code, read [docs/architecture.md](docs/architecture.md) —
-all provider traffic goes through one TS stack (`lib/llm-providers.ts` via
-`/api/llm`); the legacy Rust LLM path was removed in 2026-08. The always-on-top
-overlay window is a planned future feature, not yet wired up.

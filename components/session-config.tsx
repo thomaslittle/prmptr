@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import ContextEditor from "@/components/context-editor";
-import { ModelPicker } from "@/components/model-picker";
+import { ModelPicker, type PickableModel } from "@/components/model-picker";
 import { modelDisplayName } from "@/lib/model-display";
 import {
     Dialog,
@@ -37,7 +37,8 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { isCliSubscriptionProvider } from "@/lib/cli-providers";
+import { fetchProviderModels, type ProviderModel } from "@/lib/provider-models";
+import { useLocalAiModels } from "@/lib/use-local-ai-models";
 
 const TEMPLATES: SessionTemplate[] = [
     {
@@ -161,9 +162,16 @@ export default memo(function SessionConfigPanel({
     }, [renamingId, renameValue, onRenameSession]);
 
     const providersToFetch = useMemo(
-        () => Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders])),
+        // Your AI apps has its own lazily-enabled query below.
+        () => Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders])).filter((p) => p !== "local-ai"),
         [configuredProviders]
     );
+
+    // Scanning installed AI apps spawns probes, so only do it once the user
+    // opens the model picker (or already runs on a local-ai model).
+    const [localAiRequested, setLocalAiRequested] = useState(false);
+    const localAiQuery = useLocalAiModels(localAiRequested || config.provider === "local-ai");
+    const requestLocalAi = useCallback(() => setLocalAiRequested(true), []);
 
     const providerModelsQuery = useQuery({
         queryKey: [
@@ -182,45 +190,16 @@ export default memo(function SessionConfigPanel({
                     const body: { provider: LLMProvider; apiKey?: string; baseUrl?: string } = { provider };
                     if (provider === "lmstudio") {
                         body.baseUrl = settings.lmstudioUrl;
-                    } else if (!isCliSubscriptionProvider(provider)) {
-                        const key = settings.apiKeys[provider as Exclude<LLMProvider, "lmstudio">];
+                    } else {
+                        const key = settings.apiKeys[provider as keyof typeof settings.apiKeys];
                         if (!key) return [provider, []] as const;
                         body.apiKey = key;
                     }
-                    // CLI subscription providers need no apiKey — the server
-                    // resolves credentials from the logged-in CLI.
-
-                    try {
-                        const resp = await fetch("/api/provider-models", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(body),
-                        });
-                        if (!resp.ok) return [provider, []] as const;
-                        const data = (await resp.json()) as { models?: Array<string | { id?: string; name?: string; subProvider?: string }> };
-                        const models = Array.isArray(data.models)
-                            ? data.models
-                                .map((entry) => {
-                                    if (typeof entry === "string") return { id: entry };
-                                    return {
-                                        id: typeof entry?.id === "string" ? entry.id : "",
-                                        ...(typeof entry?.name === "string" && entry.name
-                                            ? { name: entry.name }
-                                            : {}),
-                                        ...(typeof entry?.subProvider === "string" && entry.subProvider
-                                            ? { subProvider: entry.subProvider }
-                                            : {}),
-                                    };
-                                })
-                                .filter((m): m is { id: string; name?: string; subProvider?: string } => !!m.id)
-                            : [];
-                        return [provider, models] as const;
-                    } catch {
-                        return [provider, []] as const;
-                    }
+                    const models = await fetchProviderModels(body);
+                    return [provider, models] as const;
                 })
             );
-            const out: Partial<Record<LLMProvider, Array<{ id: string; name?: string; subProvider?: string }>>> = {};
+            const out: Partial<Record<LLMProvider, ProviderModel[]>> = {};
             for (const [provider, models] of entries) {
                 out[provider] = [...models];
             }
@@ -229,21 +208,21 @@ export default memo(function SessionConfigPanel({
         staleTime: 60_000,
         gcTime: 10 * 60_000,
         refetchOnWindowFocus: false,
-        // Live-refresh so newly-added models (e.g. new Claude Code / OpenAI
+        // Live-refresh so newly-added models (e.g. new Claude / OpenAI
         // models) appear in the picker without a reload.
         refetchInterval: 5 * 60_000,
     });
-    const providerModels = providerModelsQuery.data ?? {};
+    const providerModels = useMemo(() => providerModelsQuery.data ?? {}, [providerModelsQuery.data]);
 
     const availableModels = useMemo(() => {
         const providers = Array.from(new Set<LLMProvider>(["lmstudio", ...configuredProviders]));
         const seen = new Set<string>();
-        const merged: Array<ModelDef & { subProvider?: string }> = [];
+        const merged: Array<ModelDef & PickableModel> = [];
 
         // Remote models first (live from each provider that answered)
         for (const provider of providers) {
             for (const m of providerModels[provider] ?? []) {
-                const key = `${provider}:${m.subProvider ?? ""}:${m.id}`;
+                const key = `${provider}:${m.id}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
                 const name = m.name ?? modelDisplayName(m.id, provider);
@@ -254,7 +233,6 @@ export default memo(function SessionConfigPanel({
                     speed: "fast",
                     description: "Fetched from provider",
                     maxTokens: 4096,
-                    ...(m.subProvider ? { subProvider: m.subProvider } : {}),
                 });
             }
         }
@@ -262,19 +240,34 @@ export default memo(function SessionConfigPanel({
         // Static catalog entries for providers that returned nothing
         // (e.g. LM Studio not running, or a fetch failure) so their
         // defaults don't vanish from the dropdown. Keyed identically to the
-        // remote loop above (including the empty subProvider segment) so a
-        // static entry never duplicates a live one with the same id.
+        // remote loop above so a static entry never duplicates a live one.
         for (const m of MODELS) {
             if (!providers.includes(m.provider)) continue;
-            const staticSubProvider = (m as ModelDef & { subProvider?: string }).subProvider ?? "";
-            const key = `${m.provider}:${staticSubProvider}:${m.id}`;
+            const key = `${m.provider}:${m.id}`;
             if (!seen.has(key)) {
                 seen.add(key);
                 merged.push(m);
             }
         }
+
+        // Your AI apps (OriginLM): ids are only unique per route.
+        for (const m of localAiQuery.data ?? []) {
+            const key = `local-ai:${m.localAi?.routeId ?? ""}:${m.id}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push({
+                id: m.id,
+                name: m.name ?? m.id,
+                provider: "local-ai",
+                speed: "fast",
+                description: m.group ? `Runs through ${m.group}` : "Runs through your AI app",
+                maxTokens: 4096,
+                group: m.group,
+                localAi: m.localAi,
+            });
+        }
         return merged;
-    }, [configuredProviders, providerModels]);
+    }, [configuredProviders, providerModels, localAiQuery.data]);
 
     const applyTemplate = (template: SessionTemplate) => {
         const roleplayAiVoiceEnabled = template.id === "roleplay" && !!settings.voiceReplyEnabled;
@@ -291,10 +284,7 @@ export default memo(function SessionConfigPanel({
     const currentSession = sessions.find((s) => s.id === currentSessionId);
     const sessionTitle = currentSession?.title ?? "New Session";
 
-    const selectedModel = useMemo(
-        () => availableModels.find((m) => m.id === config.model),
-        [availableModels, config.model]
-    );
+    const localAiScanning = localAiQuery.isFetching && !(localAiQuery.data?.length);
 
     return (
         <div className="flex flex-col min-h-0 flex-1">
@@ -546,19 +536,23 @@ export default memo(function SessionConfigPanel({
                         <div className="flex h-7 w-full items-center border border-input bg-transparent px-2.5 text-xs text-muted-foreground">
                             Select a model
                         </div>
-                    ) : availableModels.length > 0 ? (
+                    ) : availableModels.length > 0 || localAiScanning ? (
                         <ModelPicker
                             models={availableModels}
                             value={config.model}
-                            providerValue={selectedModel?.provider}
-                            subProviderValue={selectedModel?.subProvider}
+                            providerValue={config.provider}
+                            routeValue={config.localAi?.routeId}
+                            onOpen={requestLocalAi}
+                            localAiScanning={localAiScanning}
                             onSelect={(model) => {
-                                onChange({
+                                const next: SessionConfig = {
                                     ...config,
                                     model: model.id,
                                     provider: model.provider,
-                                    subProvider: model.subProvider,
-                                });
+                                };
+                                if (model.provider === "local-ai" && model.localAi) next.localAi = model.localAi;
+                                else delete next.localAi;
+                                onChange(next);
                             }}
                         />
                     ) : (

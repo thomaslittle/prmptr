@@ -6,79 +6,35 @@ use base64::Engine;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::screenpipe::manager::{ScreenpipeManager, ScreenpipeStatus, AudioDevice};
-use crate::screenpipe::config::ScreenpipeConfig;
 use serde::Serialize;
 use crate::session::manager::{SessionConfig, SessionManager, SessionStats};
 use crate::transcription::transcript::TranscriptBuffer;
-use crate::transcription::model_manager::{WhisperModelInfo, WhisperModelSpec};
+use crate::transcription::model_manager::{SttModelInfo, SttModelSpec};
 use futures_util::StreamExt;
 
-// ──────────────────────────── Screenpipe Commands ────────────────────────────
-
-#[tauri::command]
-pub async fn start_screenpipe(
-    screenpipe: State<'_, Arc<Mutex<ScreenpipeManager>>>,
-    config: Option<ScreenpipeConfig>,
-) -> Result<(), String> {
-    let mut mgr = screenpipe.lock().await;
-    if let Some(cfg) = config {
-        mgr.update_config(cfg);
-    }
-    mgr.start().await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn stop_screenpipe(
-    screenpipe: State<'_, Arc<Mutex<ScreenpipeManager>>>,
-) -> Result<(), String> {
-    let mut mgr = screenpipe.lock().await;
-    mgr.stop().await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_screenpipe_status(
-    screenpipe: State<'_, Arc<Mutex<ScreenpipeManager>>>,
-) -> Result<ScreenpipeStatus, String> {
-    let mut mgr = screenpipe.lock().await;
-    Ok(mgr.check_health().await)
-}
-
-#[tauri::command]
-pub async fn get_audio_devices(
-    screenpipe: State<'_, Arc<Mutex<ScreenpipeManager>>>,
-) -> Result<Vec<AudioDevice>, String> {
-    let mgr = screenpipe.lock().await;
-    mgr.get_audio_devices().await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn update_screenpipe_config(
-    screenpipe: State<'_, Arc<Mutex<ScreenpipeManager>>>,
-    config: ScreenpipeConfig,
-) -> Result<(), String> {
-    let mut mgr = screenpipe.lock().await;
-    mgr.update_config(config);
-    Ok(())
-}
-
 // ──────────────────────────── Native Audio Device Enumeration ────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioDevice {
+    pub name: String,
+    pub is_default: bool,
+}
 
 #[tauri::command]
 pub async fn list_system_audio_devices() -> Result<Vec<AudioDevice>, String> {
     tokio::task::spawn_blocking(|| {
-        use cpal::traits::{DeviceTrait, HostTrait};
+        use cpal::traits::HostTrait;
         let host = cpal::default_host();
         let default_input = host
             .default_input_device()
-            .and_then(|d| d.name().ok());
+            .and_then(|d| crate::audio_device::device_name(&d));
         let default_output = host
             .default_output_device()
-            .and_then(|d| d.name().ok());
+            .and_then(|d| crate::audio_device::device_name(&d));
         let mut devices = Vec::new();
         if let Ok(inputs) = host.input_devices() {
             for dev in inputs {
-                if let Ok(name) = dev.name() {
+                if let Some(name) = crate::audio_device::device_name(&dev) {
                     let display_name = format!("{} (input)", name);
                     devices.push(AudioDevice {
                         name: display_name,
@@ -89,7 +45,7 @@ pub async fn list_system_audio_devices() -> Result<Vec<AudioDevice>, String> {
         }
         if let Ok(outputs) = host.output_devices() {
             for dev in outputs {
-                if let Ok(name) = dev.name() {
+                if let Some(name) = crate::audio_device::device_name(&dev) {
                     let display_name = format!("{} (output)", name);
                     devices.push(AudioDevice {
                         name: display_name,
@@ -103,39 +59,6 @@ pub async fn list_system_audio_devices() -> Result<Vec<AudioDevice>, String> {
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-// ──────────────────────────── Screenpipe Install Commands ────────────────────────────
-
-#[derive(Serialize)]
-pub struct CheckInstallResult {
-    pub installed: bool,
-    pub path: Option<String>,
-}
-
-#[tauri::command]
-pub async fn check_screenpipe_installed(
-    screenpipe: State<'_, Arc<Mutex<ScreenpipeManager>>>,
-) -> Result<CheckInstallResult, String> {
-    let mut mgr = screenpipe.lock().await;
-    let path = mgr.find_binary();
-    Ok(CheckInstallResult { installed: path.is_some(), path })
-}
-
-#[tauri::command]
-pub async fn install_screenpipe(
-    app: tauri::AppHandle,
-    screenpipe: State<'_, Arc<Mutex<ScreenpipeManager>>>,
-) -> Result<String, String> {
-    let path = crate::screenpipe::installer::download_and_install(&app)
-        .await
-        .map_err(|e| e.to_string())?;
-    // Update manager so it knows where the binary is
-    let mut mgr = screenpipe.lock().await;
-    let mut cfg = mgr.config().clone();
-    cfg.binary_path = Some(path.clone());
-    mgr.update_config(cfg);
-    Ok(path)
 }
 
 // ──────────────────────────── Session Commands ────────────────────────────
@@ -208,8 +131,16 @@ fn normalize_lmstudio_base(base_url: Option<String>) -> String {
     }
 }
 
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))
+}
+
 async fn validate_openai_compatible(base: &str, api_key: &str) -> Result<bool, String> {
-    let mut req = reqwest::Client::new().get(format!("{base}/models"));
+    let mut req = http_client()?.get(format!("{base}/models"));
     req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"));
     let resp = req.send().await.map_err(|e| format!("Validation failed: {e}"))?;
     Ok(resp.status().is_success())
@@ -223,16 +154,11 @@ pub async fn validate_api_key(
 ) -> Result<bool, String> {
     match provider.as_str() {
         "anthropic" => {
-            let resp = reqwest::Client::new()
-                .post("https://api.anthropic.com/v1/messages")
+            // Listing models is free and model-agnostic, unlike a test message.
+            let resp = http_client()?
+                .get("https://api.anthropic.com/v1/models")
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&serde_json::json!({
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "hi"}],
-                }))
                 .send()
                 .await
                 .map_err(|e| format!("Validation failed: {e}"))?;
@@ -243,7 +169,7 @@ pub async fn validate_api_key(
         }
         "lmstudio" => {
             let base = normalize_lmstudio_base(base_url);
-            let resp = reqwest::Client::new()
+            let resp = http_client()?
                 .get(format!("{base}/models"))
                 .send()
                 .await
@@ -259,7 +185,7 @@ pub async fn fetch_lmstudio_models(
     base_url: Option<String>,
 ) -> Result<Vec<String>, String> {
     let base = normalize_lmstudio_base(base_url);
-    let resp = reqwest::Client::new()
+    let resp = http_client()?
         .get(format!("{base}/models"))
         .send()
         .await
@@ -282,68 +208,84 @@ pub async fn fetch_lmstudio_models(
         .unwrap_or_default())
 }
 
-// ──────────────────────────── Local Whisper Commands ────────────────────────────
+// ──────────────────────────── Local Transcription Commands ────────────────────────────
+
+type LocalSttState<'a> = State<'a, Arc<Mutex<crate::transcription::local_stream::LocalSttManager>>>;
 
 #[tauri::command]
 pub async fn start_local_transcription(
     app: tauri::AppHandle,
-    whisper: State<'_, Arc<Mutex<crate::transcription::whisper_stream::WhisperStreamManager>>>,
+    stt: LocalSttState<'_>,
     transcript: State<'_, Arc<Mutex<TranscriptBuffer>>>,
     input_device_name: Option<String>,
     output_device_name: Option<String>,
-    whisper_model_id: Option<String>,
+    model_id: Option<String>,
     prefer_gpu: Option<bool>,
-    use_moonshine: Option<bool>,
     mute_input: Option<bool>,
     mute_output: Option<bool>,
+    glossary: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let config = crate::transcription::whisper_stream::LocalWhisperConfig {
+    if input_device_name.is_none() && output_device_name.is_none() {
+        return Err("Select a microphone or system-audio device in Settings → Capture first.".to_string());
+    }
+    if stt.lock().await.is_running() {
+        return Err("Local transcription already running".to_string());
+    }
+
+    // Load the model off the async runtime (mmap + session setup can take a
+    // second or two) and surface failures to the caller instead of a worker
+    // thread silently dying.
+    let (spec, path) =
+        crate::transcription::model_manager::resolve_stt_model(&app, model_id.as_deref())?;
+    let prefer_gpu = prefer_gpu.unwrap_or(false);
+    let engine = tauri::async_runtime::spawn_blocking(move || {
+        crate::transcription::stt_engine::SttEngine::load(spec, &path, prefer_gpu, &glossary.unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("Speech model loader crashed: {e}"))??;
+
+    let config = crate::transcription::local_stream::LocalSttConfig {
         input_device_name,
         output_device_name,
-        whisper_model_id,
-        prefer_gpu: prefer_gpu.unwrap_or(false),
-        use_moonshine: use_moonshine.unwrap_or(false),
         mute_input: mute_input.unwrap_or(false),
         mute_output: mute_output.unwrap_or(false),
         ..Default::default()
     };
 
-    let mut mgr = whisper.lock().await;
-    mgr.start(app, config, transcript.inner().clone())
+    let mut mgr = stt.lock().await;
+    mgr.start(app, config, engine, transcript.inner().clone())
 }
 
 #[tauri::command]
-pub async fn stop_local_transcription(
-    whisper: State<'_, Arc<Mutex<crate::transcription::whisper_stream::WhisperStreamManager>>>,
-) -> Result<(), String> {
-    let mut mgr = whisper.lock().await;
-    mgr.stop();
-    Ok(())
+pub async fn stop_local_transcription(stt: LocalSttState<'_>) -> Result<(), String> {
+    let manager = stt.inner().clone();
+    // Joining capture/inference threads can block for an in-flight utterance;
+    // keep it off the async runtime.
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(async move { manager.lock().await.stop() })
+    })
+    .await
+    .map_err(|e| format!("Failed to stop transcription: {e}"))
 }
 
 /// Live per-channel mute: flips the shared flag the capture callbacks check, so
 /// a muted channel silently stops feeding the transcript without restarting.
 #[tauri::command]
-pub async fn set_local_mute(
-    whisper: State<'_, Arc<Mutex<crate::transcription::whisper_stream::WhisperStreamManager>>>,
-    channel: String,
-    muted: bool,
-) -> Result<(), String> {
-    let mgr = whisper.lock().await;
+pub async fn set_local_mute(stt: LocalSttState<'_>, channel: String, muted: bool) -> Result<(), String> {
+    let mgr = stt.lock().await;
     mgr.set_mute(&channel, muted);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_local_activity(
-    whisper: State<'_, Arc<Mutex<crate::transcription::whisper_stream::WhisperStreamManager>>>,
-) -> Result<serde_json::Value, String> {
-    let mgr = whisper.lock().await;
+pub async fn get_local_activity(stt: LocalSttState<'_>) -> Result<serde_json::Value, String> {
+    let mgr = stt.lock().await;
     Ok(serde_json::json!({
         "input_level": mgr.input_level(),
         "output_level": mgr.output_level(),
         "input_muted": mgr.input_muted(),
         "output_muted": mgr.output_muted(),
+        "running": mgr.is_running(),
     }))
 }
 
@@ -429,222 +371,49 @@ pub async fn set_deepgram_mute(
 }
 
 #[derive(Clone, Serialize)]
+pub struct ComputeDevice {
+    pub kind: String,
+    pub name: String,
+    pub is_gpu: bool,
+}
+
+#[derive(Clone, Serialize)]
 pub struct LocalGpuStatus {
-    pub nvidia_gpu_detected: bool,
-    pub cuda_toolkit_installed: bool,
-    pub cuda_backend_available: bool,
+    /// A GPU device is usable by the speech engine in this build.
     pub can_use_gpu: bool,
+    /// GPU backends compiled into this build (e.g. "vulkan", "cuda").
+    pub gpu_backends: Vec<String>,
+    pub devices: Vec<ComputeDevice>,
     pub message: String,
-    /// Human-readable toolkit identity, e.g. "v13.3 (via CUDA_PATH)".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cuda_toolkit_version: Option<String>,
-    /// Actionable setup hints when GPU is not fully usable.
-    #[serde(default)]
-    pub hints: Vec<String>,
 }
 
 #[tauri::command]
 pub fn get_local_transcription_gpu_status() -> Result<LocalGpuStatus, String> {
-    // Modern whisper.cpp prints per-backend sections, e.g.
-    //   "WHISPER : ... | cpu : A = 1 | cuda : F16 = 1 | "
-    // The "cuda :" section only exists when built with GGML_CUDA=ON.
-    fn whisper_cuda_backend_available() -> bool {
-        unsafe {
-            let ptr = whisper_rs_sys::whisper_print_system_info();
-            if ptr.is_null() {
-                return false;
-            }
-            let info = std::ffi::CStr::from_ptr(ptr).to_string_lossy().to_lowercase();
-            info.split('|')
-                .any(|segment| segment.trim().starts_with("cuda"))
-        }
-    }
-
-    // ── 1. NVIDIA GPU via driver tooling ──
-    let nvidia_gpu_detected = std::process::Command::new("nvidia-smi")
-        .arg("-L")
-        .output()
-        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false);
-
-    // ── 2. NVIDIA driver API present (what whisper.cpp actually loads at runtime) ──
-    #[cfg(target_os = "windows")]
-    let nvidia_driver_api_present = unsafe {
-        extern "system" {
-            fn LoadLibraryA(name: *const u8) -> isize;
-        }
-        let handle = LoadLibraryA(b"nvcuda.dll\0".as_ptr());
-        handle != 0
-    };
-    #[cfg(not(target_os = "windows"))]
-    let nvidia_driver_api_present = std::path::Path::new("/usr/lib/x86_64-linux-gnu/libcuda.so").exists()
-        || std::path::Path::new("/usr/lib/wsl/lib/libcuda.so").exists();
-
-    // ── 3. Toolkit discovery — many install layouts exist, check them all ──
-    let mut hints: Vec<String> = Vec::new();
-    let mut toolkit_candidates: Vec<(String, std::path::PathBuf)> = Vec::new();
-
-    // 3a. CUDA_PATH (the canonical installer-set variable)
-    if let Ok(p) = std::env::var("CUDA_PATH") {
-        let path = std::path::PathBuf::from(&p);
-        if path.join("bin").join("nvcc.exe").exists()
-            || path.join("version.json").exists()
-            || path.exists()
-        {
-            toolkit_candidates.push(("CUDA_PATH".to_string(), path));
-        }
-    }
-
-    // 3b. Per-version variables set by some installers: CUDA_PATH_V13_1, ...
-    for (key, value) in std::env::vars() {
-        if key.starts_with("CUDA_PATH_V") && !value.trim().is_empty() {
-            let path = std::path::PathBuf::from(&value);
-            if path.exists() && !toolkit_candidates.iter().any(|(_, p)| *p == path) {
-                toolkit_candidates.push((key.clone(), path));
-            }
-        }
-    }
-
-    // 3c. Standard install roots — enumerate versioned subdirs that contain nvcc
-    #[cfg(target_os = "windows")]
-    let default_roots = [
-        std::path::PathBuf::from("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA"),
-        std::path::PathBuf::from("C:\\NVIDIA GPU Computing Toolkit\\CUDA"),
-    ];
-    #[cfg(not(target_os = "windows"))]
-    let default_roots = [
-        std::path::PathBuf::from("/usr/local/cuda"),
-        std::path::PathBuf::from("/opt/cuda"),
-    ];
-
-    #[cfg(target_os = "windows")]
-    {
-        for root in default_roots.iter() {
-            if let Ok(entries) = std::fs::read_dir(root) {
-                for entry in entries.flatten() {
-                    let dir = entry.path();
-                    let nvcc = dir.join("bin").join("nvcc.exe");
-                    if nvcc.exists() && !toolkit_candidates.iter().any(|(_, p)| *p == dir) {
-                        toolkit_candidates.push((
-                            format!("default-install ({})", dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
-                            dir,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    for root in default_roots.iter() {
-        if root.join("bin").join("nvcc").exists() || root.exists() {
-            toolkit_candidates.push(("default-install".to_string(), root.to_path_buf()));
-        }
-    }
-
-    // 3d. nvcc anywhere on PATH (custom/conda installs)
-    let nvcc_on_path = if cfg!(windows) {
-        std::process::Command::new("cmd")
-            .args(["/C", "where", "nvcc"])
-            .output()
-            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false)
+    let devices: Vec<ComputeDevice> = crate::transcription::stt_engine::available_devices()
+        .into_iter()
+        .map(|(kind, name, is_gpu)| ComputeDevice { kind, name, is_gpu })
+        .collect();
+    let gpu_backends: Vec<String> = [
+        (cfg!(feature = "vulkan"), "vulkan"),
+        (cfg!(feature = "cuda"), "cuda"),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, name)| name.to_string())
+    .collect();
+    let can_use_gpu = devices.iter().any(|d| d.is_gpu);
+    let message = if can_use_gpu {
+        let gpu = devices.iter().find(|d| d.is_gpu).map(|d| d.name.clone()).unwrap_or_default();
+        format!("GPU acceleration available ({gpu}).")
+    } else if gpu_backends.is_empty() {
+        "This build runs speech recognition on the CPU — Parakeet is still many times faster than real time on any modern processor.".to_string()
     } else {
-        std::process::Command::new("sh")
-            .args(["-c", "which nvcc"])
-            .output()
-            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false)
+        format!(
+            "Built with {} support, but no compatible GPU was found. Using the CPU.",
+            gpu_backends.join("/")
+        )
     };
-
-    let cuda_toolkit_installed = !toolkit_candidates.is_empty() || nvcc_on_path;
-    let primary_toolkit = toolkit_candidates
-        .first()
-        .map(|(label, path)| {
-            let version = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if version.starts_with('v') {
-                format!("{} (via {})", version, label)
-            } else {
-                format!("{} ({})", label, path.display())
-            }
-        });
-
-    // ── 4. Was THIS app binary compiled with CUDA support? ──
-    // Modern whisper.cpp prints per-backend sections, e.g.
-    //   "WHISPER : ... | cpu : A = 1 | cuda : F16 = 1 | "
-    // The "cuda :" section only exists when built with GGML_CUDA=ON.
-    let cuda_backend_available = whisper_cuda_backend_available();
-
-    let can_use_gpu = nvidia_gpu_detected && nvidia_driver_api_present && cuda_backend_available;
-
-    // ── 5. Actionable diagnostics ──
-    if can_use_gpu {
-        hints.push(format!(
-            "GPU acceleration active. Toolkit: {}. Toggle 'Use GPU' and restart transcription to apply.",
-            primary_toolkit.clone().unwrap_or_else(|| "detected".to_string())
-        ));
-    } else {
-        if !nvidia_gpu_detected {
-            hints.push(
-                "No NVIDIA GPU found (nvidia-smi). GPU mode needs an NVIDIA card; CPU mode works everywhere.".to_string(),
-            );
-        } else if !nvidia_driver_api_present {
-            hints.push(
-                "NVIDIA GPU found but the driver API (nvcuda.dll) is unavailable — update your NVIDIA display driver.".to_string(),
-            );
-        }
-        if !cuda_toolkit_installed {
-            hints.push(
-                "No CUDA toolkit found. Install it from https://developer.nvidia.com/cuda-downloads, then fully close and restart this app (env vars are only read at launch).".to_string(),
-            );
-        }
-        if nvidia_gpu_detected && cuda_toolkit_installed && !cuda_backend_available {
-            hints.push(
-                "Toolkit + GPU detected, but this app's speech engine was built without CUDA support (or predates the install). Fully close and restart the app; if it persists, rebuild: delete src-tauri/target and run npm run tauri dev.".to_string(),
-            );
-        }
-        if cuda_toolkit_installed && !std::env::var("CUDA_PATH").map(|p| !p.trim().is_empty()).unwrap_or(false) {
-            hints.push(
-                "Tip: set the CUDA_PATH user environment variable to your toolkit folder (e.g. C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.3), then restart the app.".to_string(),
-            );
-        }
-        if toolkit_candidates.len() > 1 {
-            hints.push(format!(
-                "Multiple CUDA toolkits detected ({}). Builds use CUDA_PATH — make sure it points at the newest one.",
-                toolkit_candidates.len()
-            ));
-        }
-    }
-
-    log::info!(
-        "[gpu-status] gpu={} driver_api={} toolkit={} backend={} can_use={}",
-        nvidia_gpu_detected,
-        nvidia_driver_api_present,
-        cuda_toolkit_installed,
-        cuda_backend_available,
-        can_use_gpu
-    );
-
-    Ok(LocalGpuStatus {
-        nvidia_gpu_detected,
-        cuda_toolkit_installed,
-        cuda_backend_available,
-        can_use_gpu,
-        message: if can_use_gpu {
-            "GPU acceleration is available for local transcription.".to_string()
-        } else if !nvidia_gpu_detected {
-            "No NVIDIA GPU detected. Local transcription will run on CPU.".to_string()
-        } else if !cuda_backend_available {
-            "NVIDIA GPU detected, but this app's speech engine is not CUDA-enabled. Restart the app; if it still fails, see the tips below."
-                .to_string()
-        } else {
-            "NVIDIA driver issue detected. Update your NVIDIA display driver and restart the app.".to_string()
-        },
-        cuda_toolkit_version: primary_toolkit,
-        hints,
-    })
+    Ok(LocalGpuStatus { can_use_gpu, gpu_backends, devices, message })
 }
 
 #[tauri::command]
@@ -1195,7 +964,7 @@ pub async fn proxy_tts_list_voices(endpoint: String, api_key: Option<String>) ->
 }
 
 #[derive(Clone, Serialize)]
-pub struct WhisperModelDownloadProgress {
+pub struct SttModelDownloadProgress {
     pub model_id: String,
     pub stage: String,
     pub percent: u8,
@@ -1203,274 +972,139 @@ pub struct WhisperModelDownloadProgress {
     pub total_bytes: Option<u64>,
 }
 
-fn emit_whisper_model_progress(
-    app: &tauri::AppHandle,
-    model_id: &str,
-    stage: &str,
-    percent: u8,
-    downloaded_bytes: u64,
-    total_bytes: Option<u64>,
-) {
+fn emit_stt_progress(app: &tauri::AppHandle, model_id: &str, stage: &str, percent: u8, downloaded: u64, total: Option<u64>) {
     let _ = app.emit(
-        "whisper-model-download-progress",
-        WhisperModelDownloadProgress {
+        "stt-model-download-progress",
+        SttModelDownloadProgress {
             model_id: model_id.to_string(),
             stage: stage.to_string(),
             percent,
-            downloaded_bytes,
-            total_bytes,
+            downloaded_bytes: downloaded,
+            total_bytes: total,
         },
     );
 }
 
 #[tauri::command]
-pub fn list_whisper_models(app: tauri::AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
-    Ok(crate::transcription::model_manager::list_whisper_models(&app))
-}
-
-// ──────────────────────────── Moonshine Commands ────────────────────────────
-
-#[tauri::command]
-pub fn is_moonshine_model_installed(app: tauri::AppHandle) -> Result<bool, String> {
-    Ok(crate::transcription::model_manager::is_moonshine_installed(&app))
+pub fn list_stt_models(app: tauri::AppHandle) -> Result<Vec<SttModelInfo>, String> {
+    Ok(crate::transcription::model_manager::list_stt_models(&app))
 }
 
 #[tauri::command]
-pub async fn download_moonshine_model(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    use crate::transcription::model_manager::{
-        moonshine_install_root, MOONSHINE_ARCHIVE_FILENAME, MOONSHINE_ARCHIVE_URL, MOONSHINE_DIR_NAME,
-    };
-    use futures_util::StreamExt;
+pub fn get_selected_stt_model(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(crate::transcription::model_manager::get_selected_stt_model_id(&app))
+}
 
-    if crate::transcription::model_manager::is_moonshine_installed(&app) {
-        return Ok(());
+#[tauri::command]
+pub fn set_selected_stt_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
+    crate::transcription::model_manager::set_selected_stt_model_id(&app, &model_id)
+}
+
+/// Models currently downloading, so a double-click can't start two writers
+/// on the same `.part` file.
+static DOWNLOADS_IN_FLIGHT: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+
+#[tauri::command]
+pub async fn download_stt_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
+    let spec: &'static SttModelSpec = crate::transcription::model_manager::find_stt_model_spec(&model_id)
+        .ok_or_else(|| format!("Unknown speech model: {model_id}"))?;
+
+    {
+        let mut inflight = DOWNLOADS_IN_FLIGHT
+            .get_or_init(|| StdMutex::new(HashSet::new()))
+            .lock()
+            .map_err(|_| "download registry poisoned".to_string())?;
+        if !inflight.insert(model_id.clone()) {
+            return Err(format!("{} is already downloading", spec.name));
+        }
     }
+    let result = download_stt_model_inner(&app, spec).await;
+    if let Some(set) = DOWNLOADS_IN_FLIGHT.get() {
+        if let Ok(mut inflight) = set.lock() {
+            inflight.remove(&model_id);
+        }
+    }
+    if let Err(ref e) = result {
+        emit_stt_progress(&app, spec.id, &format!("Failed: {e}"), 0, 0, Some(spec.bytes));
+    }
+    result
+}
 
-    let root_dir = moonshine_install_root(&app)?;
-    std::fs::create_dir_all(&root_dir).map_err(|e| format!("Failed to create models dir: {e}"))?;
-    let archive_path = root_dir.join(MOONSHINE_ARCHIVE_FILENAME);
+async fn download_stt_model_inner(app: &tauri::AppHandle, spec: &'static SttModelSpec) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncWriteExt;
 
-    emit_model_download_progress(&app, "moonshine-base", "Starting download...", 0, 0, None);
+    let model_dir = crate::transcription::model_manager::models_dir(app)?;
+    tokio::fs::create_dir_all(&model_dir)
+        .await
+        .map_err(|e| format!("Failed to create model dir: {e}"))?;
+    let final_path = model_dir.join(spec.filename);
+    let part_path = model_dir.join(format!("{}.part", spec.filename));
 
-    // Stream to disk so we can report progress (archive is ~200 MB).
+    emit_stt_progress(app, spec.id, "Starting download…", 0, 0, Some(spec.bytes));
+
     let client = reqwest::Client::builder()
-        .user_agent("prmptr-moonshine-downloader")
-        .connect_timeout(std::time::Duration::from_secs(10))
+        .user_agent(concat!("prmptr/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
     let response = client
-        .get(MOONSHINE_ARCHIVE_URL)
+        .get(spec.download_url())
         .send()
         .await
         .map_err(|e| format!("Download failed: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Download failed with status {}",
-            response.status()
-        ));
+        return Err(format!("Download failed with HTTP {}", response.status()));
     }
 
-    let total_size = response.content_length();
+    let mut file = tokio::fs::File::create(&part_path)
+        .await
+        .map_err(|e| format!("Failed to create model file: {e}"))?;
+    let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
-    let mut file = std::fs::File::create(&archive_path)
-        .map_err(|e| format!("Failed to create archive file: {e}"))?;
-
+    let mut last_pct: u8 = 0;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Download stream error: {e}"))?;
-        use std::io::Write;
-        file.write_all(&chunk)
-            .map_err(|e| format!("Failed to write archive: {e}"))?;
-        downloaded += chunk.len() as u64;
-
-        const MAX_MOONSHINE_BYTES: u64 = 1024 * 1024 * 1024; // 1 GB sanity cap
-        if downloaded > MAX_MOONSHINE_BYTES {
-            drop(file);
-            let _ = std::fs::remove_file(&archive_path);
-            return Err("Download exceeded size limit — aborting".to_string());
-        }
-
-        let pct = match total_size {
-            Some(t) if t > 0 => ((downloaded as f64 / t as f64) * 100.0) as u8,
-            _ => 0,
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                drop(file);
+                let _ = tokio::fs::remove_file(&part_path).await;
+                return Err(format!("Download interrupted: {e}"));
+            }
         };
-        if downloaded % (8 * 1024 * 1024) < chunk.len() as u64 + 1 {
-            emit_model_download_progress(
-                &app,
-                "moonshine-base",
-                "Downloading...",
-                pct.min(99),
-                downloaded,
-                total_size,
-            );
+        downloaded += chunk.len() as u64;
+        if downloaded > spec.bytes {
+            drop(file);
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err("Download is larger than the pinned model; aborted".to_string());
+        }
+        hasher.update(&chunk);
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Failed to write model file: {e}"))?;
+        let pct = ((downloaded as f64 / spec.bytes as f64) * 100.0) as u8;
+        if pct != last_pct {
+            last_pct = pct;
+            emit_stt_progress(app, spec.id, "Downloading…", pct.min(99), downloaded, Some(spec.bytes));
         }
     }
+    file.flush().await.map_err(|e| format!("Failed to flush model file: {e}"))?;
     drop(file);
 
-    emit_model_download_progress(&app, "moonshine-base", "Extracting...", 99, downloaded, total_size);
-
-    // Extract with the system tar (same approach as the Kokoro TTS assets).
-    let archive_path_clone = archive_path.clone();
-    let root_dir_clone = root_dir.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let status = std::process::Command::new("tar")
-            .arg("-xjf")
-            .arg(&archive_path_clone)
-            .arg("-C")
-            .arg(&root_dir_clone)
-            .status()
-            .map_err(|e| format!("Failed to run tar for Moonshine extraction: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "Failed to extract Moonshine model archive (tar exit code: {status})"
-            ));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Failed waiting for extraction task: {e}"))??;
-
-    let installed =
-        crate::transcription::model_manager::resolve_moonshine_model_dir(&app).is_ok();
-
-    // Keep things tidy either way.
-    let _ = std::fs::remove_file(&archive_path);
-
-    if !installed {
-        return Err(format!(
-            "Moonshine archive extracted but model files were not found in {}/{MOONSHINE_DIR_NAME}",
-            root_dir.display()
-        ));
+    emit_stt_progress(app, spec.id, "Verifying…", 99, downloaded, Some(spec.bytes));
+    let digest = format!("{:x}", hasher.finalize());
+    if downloaded != spec.bytes || digest != spec.sha256 {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err("Downloaded model failed its integrity check — please retry".to_string());
     }
-
-    emit_model_download_progress(&app, "moonshine-base", "Done", 100, downloaded, total_size);
-    log::info!("Moonshine model installed at {}\\{}", root_dir.display(), MOONSHINE_DIR_NAME);
-    Ok(())
-}
-
-fn emit_model_download_progress(
-    app: &tauri::AppHandle,
-    model_id: &str,
-    stage: &str,
-    percent: u8,
-    downloaded_bytes: u64,
-    total_bytes: Option<u64>,
-) {
-    let _ = app.emit(
-        "whisper-model-download-progress",
-        WhisperModelDownloadProgress {
-            model_id: model_id.to_string(),
-            stage: stage.to_string(),
-            percent,
-            downloaded_bytes,
-            total_bytes,
-        },
-    );
-}
-
-
-#[tauri::command]
-pub fn get_selected_whisper_model(app: tauri::AppHandle) -> Result<String, String> {
-    Ok(crate::transcription::model_manager::get_selected_whisper_model_id(&app))
-}
-
-#[tauri::command]
-pub fn set_selected_whisper_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
-    crate::transcription::model_manager::set_selected_whisper_model_id(&app, &model_id)
-}
-
-#[tauri::command]
-pub async fn download_whisper_model(
-    app: tauri::AppHandle,
-    model_id: String,
-) -> Result<(), String> {
-    use tauri::Manager;
-
-    let spec: &WhisperModelSpec = crate::transcription::model_manager::find_whisper_model_spec(&model_id)
-        .ok_or_else(|| format!("Unknown model id: {model_id}"))?;
-
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
-    let model_dir = app_data_dir.join("models");
-    std::fs::create_dir_all(&model_dir)
-        .map_err(|e| format!("Failed to create model dir: {e}"))?;
-    let model_path = model_dir.join(spec.filename);
-
-    emit_whisper_model_progress(&app, &model_id, "Starting download...", 0, 0, None);
-
-    let client = reqwest::Client::builder()
-        .user_agent("prmptr-whisper-model-downloader")
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-
-    let response = client
-        .get(spec.download_url)
-        .send()
+    tokio::fs::rename(&part_path, &final_path)
         .await
-        .map_err(|e| format!("Download failed: {e}"))?;
+        .map_err(|e| format!("Failed to install model file: {e}"))?;
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "Download failed with status {}",
-            response.status()
-        ));
-    }
-
-    let total_size = response.content_length();
-    let mut downloaded: u64 = 0;
-    let mut file = std::fs::File::create(&model_path)
-        .map_err(|e| format!("Failed to create model file: {e}"))?;
-
-    let mut stream = response.bytes_stream();
-    // Safety cap: refuse absurdly large downloads (largest whisper model ~3 GB).
-    const MAX_MODEL_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Download stream error: {e}"))?;
-        use std::io::Write;
-        file.write_all(&chunk)
-            .map_err(|e| format!("Failed to write model file: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if downloaded > MAX_MODEL_DOWNLOAD_BYTES {
-            drop(file);
-            let _ = std::fs::remove_file(&model_path);
-            return Err("Download exceeded maximum expected size; aborted".to_string());
-        }
-
-        let pct = if let Some(total) = total_size {
-            if total > 0 {
-                ((downloaded as f64 / total as f64) * 100.0) as u8
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
-        emit_whisper_model_progress(
-            &app,
-            &model_id,
-            "Downloading...",
-            pct.min(99),
-            downloaded,
-            total_size,
-        );
-    }
-
-    emit_whisper_model_progress(
-        &app,
-        &model_id,
-        "Complete",
-        100,
-        downloaded,
-        total_size,
-    );
-
-    crate::transcription::model_manager::set_selected_whisper_model_id(&app, &model_id)?;
+    emit_stt_progress(app, spec.id, "Complete", 100, downloaded, Some(spec.bytes));
+    crate::transcription::model_manager::set_selected_stt_model_id(app, spec.id)?;
+    log::info!("Speech model installed: {}", final_path.display());
     Ok(())
 }
 

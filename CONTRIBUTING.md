@@ -33,7 +33,7 @@ cargo check         # run inside src-tauri/ — must be clean
    goes through the single TS path (`lib/llm-providers.ts` via `/api/llm`) —
    the legacy Rust LLM stack was removed in 2026-08. The overlay window is a
    documented future feature; see the architecture doc before touching it.
-2. **Security-sensitive code** (`lib/api-guard.ts`, `src-tauri/src/screenpipe/`,
+2. **Security-sensitive code** (`lib/api-guard.ts`,
    `commands.rs` IPC surface, CSP) — explain your reasoning in the PR. All API
    routes must stay loopback-only and origin-checked; never fetch arbitrary
    user-supplied URLs server-side without going through `parseLocalHttpUrl`.

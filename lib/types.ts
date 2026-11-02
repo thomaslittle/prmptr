@@ -1,64 +1,4 @@
 // ============================================================
-// Screenpipe Types
-// ============================================================
-
-export interface ScreenpipeQuery {
-    q?: string;
-    contentType?: "ocr" | "audio" | "all";
-    limit?: number;
-    offset?: number;
-    startTime?: string;
-    endTime?: string;
-    appName?: string;
-    windowName?: string;
-    includeFrames?: boolean;
-    minLength?: number;
-    maxLength?: number;
-    speakerIds?: number[];
-    speakerName?: string;
-    browserUrl?: string;
-}
-
-export interface ScreenpipeOCRContent {
-    frameId: number;
-    text: string;
-    timestamp: string;
-    filePath: string;
-    appName: string;
-    windowName: string;
-    tags: string[];
-    frame?: string;
-    browserUrl?: string;
-}
-
-export interface ScreenpipeAudioContent {
-    chunkId: number;
-    transcription: string;
-    timestamp: string;
-    filePath: string;
-    deviceName: string;
-    deviceType: string;
-    speaker?: {
-        id: number;
-        name?: string;
-    };
-}
-
-export interface ScreenpipeResult {
-    type: "OCR" | "Audio";
-    content: ScreenpipeOCRContent | ScreenpipeAudioContent;
-}
-
-export interface ScreenpipeResponse {
-    data: ScreenpipeResult[];
-    pagination: {
-        limit: number;
-        offset: number;
-        total: number;
-    };
-}
-
-// ============================================================
 // LLM Types
 // ============================================================
 
@@ -69,11 +9,10 @@ export type LLMProvider =
     | "lmstudio"
     | "cerebras"
     | "zen"
-    // Local CLI subscription providers (credentials resolved server-side from
-    // the user's logged-in coding CLIs; see lib/cli-providers.ts).
-    | "claude-cli"
-    | "codex-cli"
-    | "opencode-cli";
+    // "Your AI apps": models from AI clients the user already has signed in
+    // (Claude Code, Codex, OpenCode, Gemini CLI, Ollama, LM Studio, ...), run
+    // through OriginLM by the Rust backend. PRMPTR never sees their credentials.
+    | "local-ai";
 
 export interface ModelDef {
     id: string;
@@ -94,8 +33,6 @@ export interface LLMRequest {
     provider: LLMProvider;
     apiKey: string;
     baseUrl?: string;
-    /** Codex CLI ChatGPT-backend account id (sent as chatgpt-account-id). */
-    accountId?: string;
     maxTokens?: number;
     temperature?: number;
     signal?: AbortSignal;
@@ -148,11 +85,21 @@ export interface SessionConfig {
     model: string;
     provider: LLMProvider;
     /**
-     * Provider sub-group for CLI subscription providers that have multiple
-     * gateway "groups" with separate credentials (e.g. OpenCode `opencode`
-     * vs `opencode-go`). Absent for providers without sub-groups.
+     * OriginLM route for `provider: "local-ai"` (`model` is the OriginLM
+     * model id). Absent for every other provider.
      */
-    subProvider?: string;
+    localAi?: LocalAiRoute;
+}
+
+/** Identifies one model on one installed AI app, as reported by OriginLM. */
+export interface LocalAiRoute {
+    routeId: string;
+    revision: string;
+    nativeId?: string;
+    providerName?: string;
+    /** OriginLM display name, e.g. "Claude Haiku 5.5". */
+    name?: string;
+    supportsImageInput?: boolean;
 }
 
 export interface SessionTemplate {
@@ -234,7 +181,6 @@ export const DEFAULT_SHORTCUTS: ShortcutConfig = {
 // ============================================================
 
 export interface AppSettings {
-    screenpipeUrl: string;
     lmstudioUrl: string;
     voiceReplyEnabled?: boolean;
     ttsProvider?: "local-sherpa" | "remote-http";
@@ -249,28 +195,20 @@ export interface AppSettings {
     outputDevice?: string;
     muteInput?: boolean;
     muteOutput?: boolean;
-    enableVision?: boolean;
     includeScreenshotOnAnalyze?: boolean;
     deepgramApiKey?: string;
-    transcriptionMode?: "screenpipe" | "local-whisper" | "direct-deepgram";
-    /** Inference engine for the on-device (local-whisper) mode. */
-    localSttEngine?: "whisper" | "moonshine";
+    /** "local-whisper" is the legacy name kept for saved settings; it runs the on-device engine. */
+    transcriptionMode?: "local-whisper" | "direct-deepgram";
     localPreferGpu?: boolean;
+    /** Personal glossary, one entry per line: `Term` or `Term = mishearing, …`. */
+    glossary?: string;
     apiKeys: {
         anthropic?: string;
         openai?: string;
         groq?: string;
         cerebras?: string;
         zen?: string;
-        "claude-cli"?: string;
-        "codex-cli"?: string;
-        "opencode-cli"?: string;
     };
-    /**
-     * Opt-out flags for detected local CLI subscriptions. Detected + logged-in
-     * CLIs are usable by default; `false` hides that provider's models.
-     */
-    cliSubscriptions?: Partial<Record<"claude-cli" | "codex-cli" | "opencode-cli", boolean>>;
     defaultProvider: LLMProvider;
     defaultModel: string;
     shortcuts: ShortcutConfig;
@@ -280,6 +218,10 @@ export interface AppSettings {
 // Model Registry
 // ============================================================
 
+// Static catalog shown before a provider's live model list loads (and when
+// it can't be fetched). Live lists from each provider's /models endpoint are
+// authoritative; keep this to current, fast models suited to real-time use.
+// Prices are USD per 1K tokens.
 export const MODELS: ModelDef[] = [
     // LM Studio (local)
     {
@@ -290,140 +232,69 @@ export const MODELS: ModelDef[] = [
         description: "Uses whatever model is loaded in LM Studio",
         maxTokens: 4096,
     },
-    // Cerebras
-    {
-        id: "llama-3.1-8b",
-        name: "Llama 3.1 8B (Cerebras)",
-        provider: "cerebras",
-        speed: "blazing",
-        description: "Low-cost, very fast",
-        maxTokens: 4096,
-    },
     // Anthropic
     {
-        id: "claude-sonnet-4-5-20250929",
-        name: "Claude Sonnet 4.5",
-        provider: "anthropic",
-        speed: "fast",
-        description: "Best speed/quality balance",
-        maxTokens: 8192,
-        costPer1kInput: 0.003,
-        costPer1kOutput: 0.015,
-    },
-    {
-        id: "claude-haiku-4-5-20251001",
-        name: "Claude Haiku 4.5",
+        id: "claude-haiku-5-5",
+        name: "Claude Haiku 5.5",
         provider: "anthropic",
         speed: "blazing",
-        description: "Fastest, most cost-effective",
+        description: "Fastest Claude — ideal for live suggestions",
         maxTokens: 8192,
-        costPer1kInput: 0.0008,
-        costPer1kOutput: 0.004,
+        costPer1kInput: 0.0001,
+        costPer1kOutput: 0.0005,
     },
     {
-        id: "claude-opus-4-5-20250918",
-        name: "Claude Opus 4.5",
+        id: "claude-sonnet-5-5",
+        name: "Claude Sonnet 5.5",
         provider: "anthropic",
-        speed: "moderate",
-        description: "Most capable, complex analysis",
-        maxTokens: 8192,
-        costPer1kInput: 0.015,
-        costPer1kOutput: 0.075,
-    },
-    // OpenAI
-    {
-        id: "gpt-4o",
-        name: "GPT-4o",
-        provider: "openai",
         speed: "fast",
-        description: "Strong all-rounder",
-        maxTokens: 4096,
-        costPer1kInput: 0.0025,
+        description: "Sharper writing and reasoning, still quick",
+        maxTokens: 8192,
+        costPer1kInput: 0.002,
         costPer1kOutput: 0.01,
     },
     {
-        id: "gpt-4o-mini",
-        name: "GPT-4o Mini",
-        provider: "openai",
-        speed: "blazing",
-        description: "Fast and affordable",
-        maxTokens: 4096,
-        costPer1kInput: 0.00015,
-        costPer1kOutput: 0.0006,
-    },
-    {
-        id: "gpt-4.1",
-        name: "GPT-4.1",
-        provider: "openai",
-        speed: "fast",
-        description: "Latest model, strong reasoning",
-        maxTokens: 8192,
-    },
-    {
-        id: "gpt-4.1-mini",
-        name: "GPT-4.1 Mini",
-        provider: "openai",
-        speed: "blazing",
-        description: "Latest small model",
-        maxTokens: 8192,
-    },
-    {
-        id: "gpt-4.1-nano",
-        name: "GPT-4.1 Nano",
-        provider: "openai",
-        speed: "blazing",
-        description: "Ultra-fast, lowest cost",
-        maxTokens: 8192,
-    },
-    // Claude Code subscription (OAuth via logged-in `claude` CLI)
-    {
-        id: "claude-sonnet-4-5-20250929",
-        name: "Claude Sonnet 4.5 (subscription)",
-        provider: "claude-cli",
-        speed: "fast",
-        description: "Uses your Claude subscription — no API key",
-        maxTokens: 8192,
-    },
-    {
-        id: "claude-haiku-4-5-20251001",
-        name: "Claude Haiku 4.5 (subscription)",
-        provider: "claude-cli",
-        speed: "blazing",
-        description: "Fastest Claude, uses your subscription",
-        maxTokens: 8192,
-    },
-    {
-        id: "claude-opus-4-5-20250918",
-        name: "Claude Opus 4.5 (subscription)",
-        provider: "claude-cli",
+        id: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
+        provider: "anthropic",
         speed: "moderate",
-        description: "Most capable Claude, uses your subscription",
+        description: "Most capable Claude for deep analysis",
         maxTokens: 8192,
+        costPer1kInput: 0.004,
+        costPer1kOutput: 0.02,
     },
-    // Codex / ChatGPT subscription
+    // OpenAI
     {
-        id: "gpt-5-codex",
-        name: "GPT-5-Codex (ChatGPT)",
-        provider: "codex-cli",
-        speed: "fast",
-        description: "Uses your ChatGPT subscription via Codex CLI",
-        maxTokens: 8192,
-    },
-    {
-        id: "gpt-5",
-        name: "GPT-5 (ChatGPT)",
-        provider: "codex-cli",
-        speed: "fast",
-        description: "General GPT-5 via your ChatGPT subscription",
-        maxTokens: 8192,
-    },
-    {
-        id: "gpt-5-mini",
-        name: "GPT-5 Mini (ChatGPT)",
-        provider: "codex-cli",
+        id: "gpt-6.1-terra",
+        name: "GPT-6.1 Terra",
+        provider: "openai",
         speed: "blazing",
-        description: "Lightweight ChatGPT-subscription model",
-        maxTokens: 4096,
+        description: "Fast, efficient OpenAI model",
+        maxTokens: 8192,
+    },
+    {
+        id: "gpt-6.1-sol",
+        name: "GPT-6.1 Sol",
+        provider: "openai",
+        speed: "fast",
+        description: "Balanced intelligence and cost",
+        maxTokens: 8192,
+    },
+    {
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        provider: "openai",
+        speed: "moderate",
+        description: "OpenAI's most capable model",
+        maxTokens: 8192,
+    },
+    {
+        id: "gpt-6-luna",
+        name: "GPT-6 Luna",
+        provider: "openai",
+        speed: "blazing",
+        description: "Lowest-cost OpenAI model",
+        maxTokens: 8192,
     },
     // Groq
     {
@@ -446,48 +317,13 @@ export const MODELS: ModelDef[] = [
         costPer1kInput: 0.00015,
         costPer1kOutput: 0.0006,
     },
+    // Cerebras
     {
-        id: "llama-3.3-70b-versatile",
-        name: "Llama 3.3 70B",
-        provider: "groq",
+        id: "gpt-oss-120b",
+        name: "GPT-OSS 120B (Cerebras)",
+        provider: "cerebras",
         speed: "blazing",
-        description: "Fast + capable, great default",
-        maxTokens: 4096,
-        costPer1kInput: 0.00059,
-        costPer1kOutput: 0.00079,
-    },
-    {
-        id: "llama-3.1-8b-instant",
-        name: "Llama 3.1 8B",
-        provider: "groq",
-        speed: "blazing",
-        description: "Ultra-fast simple responses",
-        maxTokens: 4096,
-        costPer1kInput: 0.00005,
-        costPer1kOutput: 0.00008,
-    },
-    {
-        id: "llama-4-scout-17b-16e-instruct",
-        name: "Llama 4 Scout",
-        provider: "groq",
-        speed: "fast",
-        description: "Newest Llama, strong reasoning",
-        maxTokens: 4096,
-    },
-    {
-        id: "compound-beta",
-        name: "Compound",
-        provider: "groq",
-        speed: "fast",
-        description: "Agentic: web search + code exec",
-        maxTokens: 4096,
-    },
-    {
-        id: "compound-beta-mini",
-        name: "Compound Mini",
-        provider: "groq",
-        speed: "blazing",
-        description: "Lightweight agentic, single tool call",
+        description: "Wafer-scale speed, thousands of tokens/sec",
         maxTokens: 4096,
     },
 ];

@@ -22,10 +22,9 @@ anonymous).
 ## Scope notes
 
 PRMPTR is a desktop app that runs a local Next.js server and spawns/manages
-native processes (screenpipe, Whisper, TTS). Areas of particular interest:
+native processes (Whisper, TTS). Areas of particular interest:
 
 - `lib/api-guard.ts` — loopback-only guards for all API routes
-- `src-tauri/src/screenpipe/` — process management, downloads, key redaction
 - `src-tauri/src/commands.rs` — IPC surface (URL opening, TTS proxying,
   model downloads)
 - `tauri.conf.json` — CSP and capability configuration

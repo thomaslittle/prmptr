@@ -31,9 +31,6 @@ their respective repos.
 
 ## External services (opt-in only)
 
-- **screenpipe** ([repo](https://github.com/mediar-ai/screenpipe)) — optional
-  screen/audio capture engine; separately licensed by its authors. Not
-  bundled; the app can download/install it on request.
 - **OpenCode Zen**, Deepgram, Anthropic, OpenAI, Groq, Cerebras — cloud APIs
   used only when you configure keys for them. Your usage is governed by each
   provider's terms.

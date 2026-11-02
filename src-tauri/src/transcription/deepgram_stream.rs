@@ -9,7 +9,6 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
-const SAMPLE_RATE: u32 = 16_000;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DirectDeepgramConfig {
@@ -52,35 +51,7 @@ struct DeepgramMessage {
     speech_final: Option<bool>,
 }
 
-fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate {
-        return input.to_vec();
-    }
-    let ratio = from_rate as f64 / to_rate as f64;
-    let out_len = (input.len() as f64 / ratio) as usize;
-    let mut output = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let src_idx = i as f64 * ratio;
-        let idx0 = src_idx as usize;
-        let frac = (src_idx - idx0 as f64) as f32;
-        let idx1 = (idx0 + 1).min(input.len().saturating_sub(1));
-        output.push(input[idx0] * (1.0 - frac) + input[idx1] * frac);
-    }
-    output
-}
 
-fn stereo_to_mono(input: &[f32]) -> Vec<f32> {
-    input
-        .chunks(2)
-        .map(|pair| {
-            if pair.len() == 2 {
-                (pair[0] + pair[1]) * 0.5
-            } else {
-                pair[0]
-            }
-        })
-        .collect()
-}
 
 fn f32_to_pcm16le(samples: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
@@ -93,7 +64,7 @@ fn f32_to_pcm16le(samples: &[f32]) -> Vec<u8> {
 }
 
 fn device_exists(device_name: &str, is_output: bool) -> bool {
-    use cpal::traits::{DeviceTrait, HostTrait};
+    use cpal::traits::HostTrait;
     let host = cpal::default_host();
     let wanted = device_name
         .trim()
@@ -104,12 +75,12 @@ fn device_exists(device_name: &str, is_output: bool) -> bool {
 
     let names: Vec<String> = if is_output {
         match host.output_devices() {
-            Ok(devs) => devs.filter_map(|d| d.name().ok()).collect(),
+            Ok(devs) => devs.filter_map(|d| crate::audio_device::device_name(&d)).collect(),
             Err(_) => return false,
         }
     } else {
         match host.input_devices() {
-            Ok(devs) => devs.filter_map(|d| d.name().ok()).collect(),
+            Ok(devs) => devs.filter_map(|d| crate::audio_device::device_name(&d)).collect(),
             Err(_) => return false,
         }
     };
@@ -153,7 +124,7 @@ fn spawn_capture_thread(
                 host.output_devices()
                     .ok()
                     .and_then(|mut devs| {
-                        devs.find(|d| d.name().map(|n| matches_device(&n, name)).unwrap_or(false))
+                        devs.find(|d| crate::audio_device::device_name(d).map(|n| matches_device(&n, name)).unwrap_or(false))
                     })
             } else {
                 host.default_output_device()
@@ -162,7 +133,7 @@ fn spawn_capture_thread(
             host.input_devices()
                 .ok()
                 .and_then(|mut devs| {
-                    devs.find(|d| d.name().map(|n| matches_device(&n, name)).unwrap_or(false))
+                    devs.find(|d| crate::audio_device::device_name(d).map(|n| matches_device(&n, name)).unwrap_or(false))
                 })
         } else {
             host.default_input_device()
@@ -183,7 +154,7 @@ fn spawn_capture_thread(
             }
         };
 
-        let dev_name = device.name().unwrap_or_default();
+        let dev_name = crate::audio_device::device_name(&device).unwrap_or_default();
         log::info!("[direct-deepgram:{label}] using device '{dev_name}'");
 
         let supported_config = if is_output {
@@ -208,7 +179,7 @@ fn spawn_capture_thread(
             }
         };
 
-        let native_rate = supported_config.sample_rate().0;
+        let native_rate = supported_config.sample_rate();
         let native_channels = supported_config.channels() as usize;
         let stream_config: cpal::StreamConfig = supported_config.into();
 
@@ -216,8 +187,15 @@ fn spawn_capture_thread(
         let tx_cb = tx.clone();
         let mute_cb = mute_flag.clone();
 
+        let mut conditioner = match crate::transcription::conditioner::AudioConditioner::new(native_rate, native_channels) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("[direct-deepgram:{label}] {e}");
+                return;
+            }
+        };
         let stream = device.build_input_stream(
-            &stream_config,
+            stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 if !running_cb.load(Ordering::Relaxed) {
                     return;
@@ -227,13 +205,10 @@ fn spawn_capture_thread(
                 if mute_cb.load(Ordering::Relaxed) {
                     return;
                 }
-                let mono = if native_channels > 1 {
-                    stereo_to_mono(data)
-                } else {
-                    data.to_vec()
-                };
-                let resampled = resample_linear(&mono, native_rate, SAMPLE_RATE);
-                let _ = tx_cb.send(resampled);
+                let resampled = conditioner.push(data);
+                if !resampled.is_empty() {
+                    let _ = tx_cb.send(resampled);
+                }
             },
             move |err| {
                 log::error!("[direct-deepgram:{label}] capture error: {err}");
@@ -584,6 +559,12 @@ impl DirectDeepgramStreamManager {
         for handle in self.threads.drain(..) {
             let _ = handle.join();
         }
+    }
+}
+
+impl Default for DirectDeepgramStreamManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

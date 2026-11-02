@@ -89,20 +89,14 @@ function ChannelWaveform({ level, active, muted }: { level: number; active: bool
 import { usePanelRef } from "react-resizable-panels";
 import type { Layout } from "react-resizable-panels";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { useCliSubscriptions, activeCliSubscriptions } from "@/lib/use-cli-subscriptions";
+import { glossaryLines } from "@/lib/glossary";
+import { useLocalAiModels } from "@/lib/use-local-ai-models";
+import { migrateSessionConfig } from "@/lib/model-migration";
 import type { LLMProvider } from "@/lib/types";
 import { useSessionStore } from "@/lib/stores/session-store";
 import { useSessionHistory } from "@/hooks/use-session-history";
-import { useScreenpipeFeed, useScreenpipeHealth } from "@/hooks/use-screenpipe";
 import {
     isTauri,
-    onScreenpipeStatus,
-    startScreenpipe,
-    stopScreenpipe,
-    updateScreenpipeConfig,
-    checkScreenpipeInstalled,
-    installScreenpipe,
-    onInstallProgress,
     listSystemAudioDevices,
     startLocalTranscription,
     stopLocalTranscription,
@@ -117,7 +111,7 @@ import {
 import { useLocalTranscription } from "@/hooks/use-local-transcription";
 import type { FeedItem } from "@/lib/types";
 import { useShortcutManager } from "@/hooks/use-shortcut-manager";
-import { GearSix, X, CircleNotch, Download, ArrowSquareOut, Ear, CaretLeft, CaretRight, SpeakerSlash } from "@phosphor-icons/react";
+import { GearSix, X, CircleNotch, CaretLeft, CaretRight, SpeakerSlash } from "@phosphor-icons/react";
 import type { ResponseEntry, SessionConfig } from "@/lib/types";
 import LiveFeed from "./live-feed";
 import AiResponse from "./ai-response";
@@ -153,7 +147,8 @@ function sourceMatchesDevice(source: string, device?: string): boolean {
 
 export default function Dashboard() {
     const { settings, setSettings, configuredProviders } = useSettingsStore();
-    const cliSubsQuery = useCliSubscriptions();
+    // Never scans on its own; reflects a scan the picker or Settings ran.
+    const localAiQuery = useLocalAiModels(false);
     const {
         config: sessionConfig,
         setConfig: setSessionConfig,
@@ -179,18 +174,12 @@ export default function Dashboard() {
     const [clearCount, setClearCount] = useState(0);
     const [sessionFeedItems, setSessionFeedItems] = useState<FeedItem[]>([]);
     const [isLiveFeed, setIsLiveFeed] = useState(true);
-    const [screenpipeLoading, setScreenpipeLoading] = useState(false);
-    // Tracks what we're waiting for: "starting" means we invoked start and are waiting for "connected",
-    // "stopping" means we invoked stop and are waiting for "disconnected".
-    const pendingActionRef = useRef<"starting" | "stopping" | null>(null);
+    // Which transition the Start/Stop button is in, for the header label.
     const [pendingAction, setPendingAction] = useState<"starting" | "stopping" | null>(null);
-    const [screenpipeInstalled, setScreenpipeInstalled] = useState<boolean | null>(null); // null = checking
     const [localWhisperRunning, setLocalWhisperRunning] = useState(false);
     const [localWhisperLoading, setLocalWhisperLoading] = useState(false);
     const [directDeepgramRunning, setDirectDeepgramRunning] = useState(false);
     const [directDeepgramLoading, setDirectDeepgramLoading] = useState(false);
-    const [installing, setInstalling] = useState(false);
-    const [installProgress, setInstallProgress] = useState<{ stage: string; percent: number } | null>(null);
     const activeTtsAudioRef = useRef<HTMLAudioElement | null>(null);
     const activeTtsUrlRef = useRef<string | null>(null);
     const [isAiVoiceSpeaking, setIsAiVoiceSpeaking] = useState(false);
@@ -282,46 +271,12 @@ export default function Dashboard() {
                     const inputDevices = devices.filter((d) => d.name.endsWith(" (input)"));
                     const defaultDevice = inputDevices.find((d) => d.is_default) || inputDevices[0];
                     if (!defaultDevice) return;
-                    setSettings({ ...settings, audioDevice: defaultDevice.name });
+                    // Merge into current state: secrets may have hydrated since mount.
+                    useSettingsStore.getState().patchSettings({ audioDevice: defaultDevice.name });
                 }
             }).catch(() => {});
         }
     }, [mounted]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    // Check if screenpipe is installed (Tauri only)
-    useEffect(() => {
-        if (!mounted || !isTauri()) return;
-        checkScreenpipeInstalled().then((result) => {
-            setScreenpipeInstalled(result.installed);
-        }).catch(() => {
-            setScreenpipeInstalled(false);
-        });
-    }, [mounted]);
-
-    // Listen for install progress events (Tauri only)
-    useEffect(() => {
-        if (!isTauri()) return;
-        let unlisten: (() => void) | null = null;
-        onInstallProgress((progress) => setInstallProgress(progress)).then(
-            (fn) => (unlisten = fn)
-        );
-        return () => unlisten?.();
-    }, []);
-
-    // Install handler
-    const handleInstallScreenpipe = useCallback(async () => {
-        setInstalling(true);
-        setInstallProgress({ stage: "Starting...", percent: 0 });
-        try {
-            await installScreenpipe();
-            setScreenpipeInstalled(true);
-        } catch (err) {
-            console.error("Install failed:", err);
-            setInstallProgress({ stage: `Error: ${err}`, percent: 0 });
-        } finally {
-            setInstalling(false);
-        }
-    }, []);
 
     // Session history handlers
     const currentSessionIdRef = useRef(currentSessionId);
@@ -419,7 +374,7 @@ export default function Dashboard() {
         async (id: string) => {
             const result = await loadSession(id);
             if (result) {
-                setSessionConfig(result.config);
+                setSessionConfig(migrateSessionConfig(result.config));
                 setResponses(result.responses);
                 setSessionFeedItems(result.feedItems);
                 setIsLiveFeed(false);
@@ -471,23 +426,8 @@ export default function Dashboard() {
         handleConfigChange({ ...sessionConfig, responseStyle: "concise" });
     }, [settings.voiceReplyEnabled, sessionConfig, handleConfigChange]);
 
-    // Screenpipe status — Tauri events or web polling
-    const [tauriScreenpipeStatus, setTauriScreenpipeStatus] = useState<{
-        running: boolean;
-        healthy: boolean;
-        message: string;
-    } | null>(null);
-    // Sticky error: persists until the user clicks Start again
-    const [screenpipeError, setScreenpipeError] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (!isTauri()) return;
-        let unlisten: (() => void) | null = null;
-        onScreenpipeStatus((status) => setTauriScreenpipeStatus(status)).then(
-            (fn) => (unlisten = fn)
-        );
-        return () => unlisten?.();
-    }, []);
+    // Sticky capture error: persists until the user clicks Start again
+    const [captureError, setCaptureError] = useState<string | null>(null);
 
     // Surface transcription-worker death instead of staying stuck in "running"
     useEffect(() => {
@@ -500,24 +440,12 @@ export default function Dashboard() {
                 } else {
                     setDirectDeepgramRunning(false);
                 }
-                setScreenpipeError(status.error ?? "Transcription stopped unexpectedly");
+                setCaptureError(status.error ?? "Transcription stopped unexpectedly");
             }
         }).then((fn) => (unlisten = fn));
         return () => unlisten?.();
     }, []);
 
-    // Web-mode health polling (only when not in Tauri)
-    const health = useScreenpipeHealth(settings.screenpipeUrl);
-    const tauriRunning = tauriScreenpipeStatus?.running ?? false;
-    const isConnected = isTauri()
-        ? tauriScreenpipeStatus?.healthy ?? false
-        : health.data?.connected ?? false;
-
-    const feed = useScreenpipeFeed({
-        screenpipeUrl: settings.screenpipeUrl,
-        enabled: isConnected,
-        enableVision: !!settings.enableVision,
-    });
     const localFeed = useLocalTranscription();
     const isLocalWhisper = (settings.transcriptionMode ?? "local-whisper") === "local-whisper";
     const isDirectDeepgram = (settings.transcriptionMode ?? "local-whisper") === "direct-deepgram";
@@ -573,13 +501,7 @@ export default function Dashboard() {
         const shouldCapture =
             !settings.muteInput || (!!settings.outputDevice && !settings.muteOutput);
         const timer = setTimeout(() => {
-            updateDirectDeepgramTranscription(
-                deepgramKey,
-                settings.audioDevice,
-                settings.outputDevice,
-                settings.muteInput,
-                settings.muteOutput
-            )
+            updateDirectDeepgramTranscription({ apiKey: deepgramKey, inputDeviceName: settings.audioDevice, outputDeviceName: settings.outputDevice, muteInput: settings.muteInput, muteOutput: settings.muteOutput })
                 .then(() => {
                     setDirectDeepgramRunning(shouldCapture);
                 })
@@ -599,15 +521,15 @@ export default function Dashboard() {
     // Auto-switch to live feed when new events arrive (e.g., after session restore)
     useEffect(() => {
         if (!isLiveFeed && (
-            (feed.items.length > 0 && feed.isPolling) ||
-            ((isLocalWhisper || isDirectDeepgram) && localFeed.items.length > 0 && (localWhisperRunning || directDeepgramRunning))
+            localFeed.items.length > 0 && (localWhisperRunning || directDeepgramRunning)
         )) {
             const timer = setTimeout(() => setIsLiveFeed(true), 0);
             return () => clearTimeout(timer);
         }
-    }, [feed.items.length, feed.isPolling, isLiveFeed, isLocalWhisper, isDirectDeepgram, localFeed.items.length, localWhisperRunning, directDeepgramRunning]);
+    }, [isLiveFeed, localFeed.items.length, localWhisperRunning, directDeepgramRunning]);
 
-    const visibleLiveItems = (isLocalWhisper || isDirectDeepgram) ? localFeed.items : feed.items;
+    // Both local and Deepgram capture emit `local-transcription` events.
+    const visibleLiveItems = localFeed.items;
 
     // Feed UI should preserve archived session items when live activity resumes.
     const displayFeedItems = (() => {
@@ -632,80 +554,21 @@ export default function Dashboard() {
         setCurrentSessionId(null);
         clearResponses();
         setSessionFeedItems([]);
-        feed.clearFeed();
         localFeed.clear();
         setIsLiveFeed(true);
-    }, [setCurrentSessionId, clearResponses, feed, localFeed]);
+    }, [setCurrentSessionId, clearResponses, localFeed]);
 
+    const captureRunning = isLocalWhisper ? localWhisperRunning : isDirectDeepgram && directDeepgramRunning;
+    const captureLoading = isLocalWhisper ? localWhisperLoading : isDirectDeepgram && directDeepgramLoading;
     const connectionStatus: "connected" | "disconnected" | "checking" = !mounted
         ? "checking"
-        : isTauri() && isLocalWhisper
-            ? localWhisperLoading
+        : !isTauri()
+            ? "disconnected"
+            : captureLoading
                 ? "checking"
-                : localWhisperRunning
+                : captureRunning
                     ? "connected"
-                    : "disconnected"
-            : isTauri() && isDirectDeepgram
-                ? directDeepgramLoading
-                    ? "checking"
-                    : directDeepgramRunning
-                        ? "connected"
-                        : "disconnected"
-            : isTauri()
-                ? tauriScreenpipeStatus?.healthy
-                    ? "connected"
-                    : tauriScreenpipeStatus?.running
-                        ? "checking"
-                        : "disconnected"
-                : health.isFetching && !health.data
-                    ? "checking"
-                    : isConnected
-                        ? "connected"
-                        : "disconnected";
-
-    // Clear loading once the connection status reaches the expected state (or timeout)
-    useEffect(() => {
-        if (!screenpipeLoading || !pendingActionRef.current) return;
-        const action = pendingActionRef.current;
-        if (
-            (action === "starting" && connectionStatus === "connected") ||
-            (action === "stopping" && connectionStatus === "disconnected")
-        ) {
-            pendingActionRef.current = null;
-            setPendingAction(null);
-            setScreenpipeLoading(false);
-        }
-    }, [connectionStatus, screenpipeLoading]);
-
-    // Safety timeout — don't stay in loading state forever (30s)
-    useEffect(() => {
-        if (!screenpipeLoading) return;
-        const timer = setTimeout(() => {
-            pendingActionRef.current = null;
-            setPendingAction(null);
-            setScreenpipeLoading(false);
-        }, 30_000);
-        return () => clearTimeout(timer);
-    }, [screenpipeLoading]);
-
-    // Build screenpipe config from latest settings store
-    const buildScreenpipeConfig = useCallback(() => {
-        const s = useSettingsStore.getState().settings;
-        const hasDeepgram = !!s.deepgramApiKey;
-        const inputEnabled = !s.muteInput;
-        const outputEnabled = !s.muteOutput;
-        const hasRealtimeAudio = hasDeepgram && ((!!s.audioDevice && inputEnabled) || (!!s.outputDevice && outputEnabled));
-        return {
-            ...(s.audioDevice && inputEnabled && { audio_device: s.audioDevice }),
-            ...(s.outputDevice && outputEnabled && { output_device: s.outputDevice }),
-            enable_realtime: hasRealtimeAudio,
-            ...(hasRealtimeAudio && s.audioDevice && inputEnabled && { realtime_audio_device: s.audioDevice }),
-            ...(s.deepgramApiKey && { deepgram_api_key: s.deepgramApiKey }),
-            disable_vision: !s.enableVision,
-            audio_chunk_duration: 3,
-            vad_sensitivity: "high",
-        };
-    }, []);
+                    : "disconnected";
 
     // Start/stop handler (used in header button) — mode-aware
     const handleToggle = useCallback(async () => {
@@ -713,7 +576,6 @@ export default function Dashboard() {
 
         if (isLocalWhisper) {
             if (localWhisperRunning) {
-                pendingActionRef.current = "stopping";
                 setPendingAction("stopping");
                 setLocalWhisperLoading(true);
                 try {
@@ -722,42 +584,34 @@ export default function Dashboard() {
                 } catch (err) {
                     console.error("Failed to stop local transcription:", err);
                 } finally {
-                    pendingActionRef.current = null;
                     setPendingAction(null);
                     setLocalWhisperLoading(false);
                 }
             } else {
-                pendingActionRef.current = "starting";
                 setPendingAction("starting");
                 setLocalWhisperLoading(true);
-                setScreenpipeError(null);
+                setCaptureError(null);
                 try {
-                    if (tauriRunning) {
-                        await stopScreenpipe();
-                    }
-                    await startLocalTranscription(
-                        settings.audioDevice,
-                        settings.outputDevice,
-                        undefined,
-                        settings.localPreferGpu,
-                        (settings.localSttEngine ?? "whisper") === "moonshine",
-                        settings.muteInput,
-                        settings.muteOutput
-                    );
+                    await startLocalTranscription({
+                        inputDeviceName: settings.audioDevice,
+                        outputDeviceName: settings.outputDevice,
+                        preferGpu: settings.localPreferGpu,
+                        muteInput: settings.muteInput,
+                        muteOutput: settings.muteOutput,
+                        glossary: glossaryLines(useSettingsStore.getState().settings.glossary),
+                    });
                     setLocalWhisperRunning(true);
                     setIsLiveFeed(true);
                 } catch (err) {
                     const message = err instanceof Error ? err.message : String(err);
-                    setScreenpipeError(message);
+                    setCaptureError(message);
                 } finally {
-                    pendingActionRef.current = null;
                     setPendingAction(null);
                     setLocalWhisperLoading(false);
                 }
             }
         } else if (isDirectDeepgram) {
             if (directDeepgramRunning) {
-                pendingActionRef.current = "stopping";
                 setPendingAction("stopping");
                 setDirectDeepgramLoading(true);
                 try {
@@ -766,86 +620,31 @@ export default function Dashboard() {
                 } catch (err) {
                     console.error("Failed to stop direct deepgram transcription:", err);
                 } finally {
-                    pendingActionRef.current = null;
                     setPendingAction(null);
                     setDirectDeepgramLoading(false);
                 }
             } else {
                 if (!settings.deepgramApiKey) {
-                    setScreenpipeError("Deepgram API key is required for Direct Deepgram mode.");
+                    setCaptureError("Deepgram API key is required for Direct Deepgram mode.");
                     return;
                 }
-                pendingActionRef.current = "starting";
                 setPendingAction("starting");
                 setDirectDeepgramLoading(true);
-                setScreenpipeError(null);
+                setCaptureError(null);
                 try {
-                    if (tauriRunning) {
-                        await stopScreenpipe();
-                    }
-                    await startDirectDeepgramTranscription(
-                        settings.deepgramApiKey,
-                        settings.audioDevice,
-                        settings.outputDevice,
-                        settings.muteInput,
-                        settings.muteOutput
-                    );
+                    await startDirectDeepgramTranscription({ apiKey: settings.deepgramApiKey, inputDeviceName: settings.audioDevice, outputDeviceName: settings.outputDevice, muteInput: settings.muteInput, muteOutput: settings.muteOutput });
                     setDirectDeepgramRunning(true);
                     setIsLiveFeed(true);
                 } catch (err) {
                     const message = err instanceof Error ? err.message : String(err);
-                    setScreenpipeError(message);
+                    setCaptureError(message);
                 } finally {
-                    pendingActionRef.current = null;
                     setPendingAction(null);
                     setDirectDeepgramLoading(false);
                 }
             }
-        } else {
-            const isStopping = connectionStatus === "connected";
-            pendingActionRef.current = isStopping ? "stopping" : "starting";
-            setPendingAction(isStopping ? "stopping" : "starting");
-            setScreenpipeLoading(true);
-            if (!isStopping) setScreenpipeError(null);
-            try {
-                if (isStopping) {
-                    await stopScreenpipe();
-                } else {
-                    await startScreenpipe(buildScreenpipeConfig());
-                }
-            } catch (err) {
-                pendingActionRef.current = null;
-                setPendingAction(null);
-                setScreenpipeLoading(false);
-                const message = err instanceof Error ? err.message : String(err);
-                setScreenpipeError(message);
-            }
         }
-    }, [isLocalWhisper, isDirectDeepgram, localWhisperRunning, directDeepgramRunning, connectionStatus, tauriRunning, buildScreenpipeConfig, settings.deepgramApiKey, settings.audioDevice, settings.outputDevice, settings.muteInput, settings.muteOutput, settings.localPreferGpu]);
-
-    // Apply Screenpipe capture changes live (mute/device) without manual stop/start.
-    useEffect(() => {
-        if (!isTauri()) return;
-        if (isLocalWhisper || isDirectDeepgram) return;
-        if (!tauriRunning) return;
-        const timer = setTimeout(() => {
-            updateScreenpipeConfig(buildScreenpipeConfig()).catch((err) => {
-                console.error("Failed to live-update screenpipe config:", err);
-            });
-        }, 120);
-        return () => clearTimeout(timer);
-    }, [
-        isLocalWhisper,
-        isDirectDeepgram,
-        tauriRunning,
-        buildScreenpipeConfig,
-        settings.audioDevice,
-        settings.outputDevice,
-        settings.muteInput,
-        settings.muteOutput,
-        settings.deepgramApiKey,
-        settings.enableVision,
-    ]);
+    }, [isLocalWhisper, isDirectDeepgram, localWhisperRunning, directDeepgramRunning, settings.deepgramApiKey, settings.audioDevice, settings.outputDevice, settings.muteInput, settings.muteOutput, settings.localPreferGpu]);
 
     // Live audio-activity: the backend emits per-channel levels while capturing,
     // independent of transcription finality, so "You"/"Them" show ACTIVE during
@@ -867,17 +666,14 @@ export default function Dashboard() {
     // channel stops feeding the transcript — no stop/restart of the engine.
     const handleMaskMute = useCallback(
         (channel: "input" | "output", muted: boolean) => {
-            setSettings({
-                ...settings,
-                ...(channel === "input" ? { muteInput: muted } : { muteOutput: muted }),
-            });
+            useSettingsStore.getState().patchSettings(channel === "input" ? { muteInput: muted } : { muteOutput: muted });
             if (isLocalWhisper && localWhisperRunning) {
                 void setLocalMute(channel, muted);
             } else if (isDirectDeepgram && directDeepgramRunning) {
                 void setDeepgramMute(channel, muted);
             }
         },
-        [isLocalWhisper, isDirectDeepgram, localWhisperRunning, directDeepgramRunning, settings, setSettings]
+        [isLocalWhisper, isDirectDeepgram, localWhisperRunning, directDeepgramRunning]
     );
 
     // Unified keyboard shortcuts (browser keydown + Tauri OS-level)
@@ -889,17 +685,15 @@ export default function Dashboard() {
 
     const providers = useMemo(() => {
         const base = configuredProviders();
-        const cli = activeCliSubscriptions(cliSubsQuery.data, settings.cliSubscriptions).map(
-            (sub) => sub.id
-        );
-        return Array.from(new Set<LLMProvider>([...base, ...cli]));
-    }, [configuredProviders, settings.apiKeys, settings.cliSubscriptions, cliSubsQuery.data]);
+        // Your AI apps counts as configured once a scan found at least one model.
+        const localAi: LLMProvider[] = (localAiQuery.data?.length ?? 0) > 0 ? ["local-ai"] : [];
+        return Array.from(new Set<LLMProvider>([...base, ...localAi]));
+        // configuredProviders() reads the store, so the key map must be a dep
+        // for the list to refresh when a key is added or removed.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [configuredProviders, settings.apiKeys, localAiQuery.data]);
 
-    const isLoading = isLocalWhisper
-        ? localWhisperLoading
-        : isDirectDeepgram
-            ? directDeepgramLoading
-            : screenpipeLoading;
+    const isLoading = captureLoading;
 
     // Status indicator dot color
     const statusDotClass = isLoading
@@ -916,14 +710,10 @@ export default function Dashboard() {
         : connectionStatus === "connected"
             ? "Recording"
             : connectionStatus === "checking"
-                ? "Connecting"
-                : "Offline";
+                ? "Loading"
+                : "Idle";
 
-    const livePolling = isLiveFeed && (
-        (isLocalWhisper && localWhisperRunning) ||
-        (isDirectDeepgram && directDeepgramRunning) ||
-        (!isLocalWhisper && !isDirectDeepgram && feed.isPolling)
-    );
+    const livePolling = isLiveFeed && captureRunning;
 
     const [activityNowMs, setActivityNowMs] = useState(() => Date.now());
     useEffect(() => {
@@ -992,33 +782,17 @@ export default function Dashboard() {
                     <div className="w-px h-4 bg-border" />
 
                     {/* Status indicator */}
-                    {mounted && isTauri() && !isLocalWhisper && !isDirectDeepgram && screenpipeInstalled === false && !installing ? (
-                        <div className="flex items-center gap-1.5">
-                            <span className="size-1.5 rounded-full bg-destructive" />
-                            <span className="text-[10px] text-muted-foreground tracking-wide uppercase">
-                                Not Installed
+                    <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={cn("size-1.5 rounded-full transition-colors shrink-0", statusDotClass)} />
+                        <span className="text-[10px] text-muted-foreground tracking-wide uppercase shrink-0">
+                            {statusLabel}
+                        </span>
+                        {connectionStatus === "disconnected" && captureError && (
+                            <span className="text-[10px] text-destructive truncate max-w-[280px]" title={captureError}>
+                                {captureError}
                             </span>
-                        </div>
-                    ) : mounted && isTauri() && installing ? (
-                        <div className="flex items-center gap-1.5">
-                            <CircleNotch weight="bold" className="size-3 text-primary animate-spin" />
-                            <span className="text-[10px] text-muted-foreground tracking-wide uppercase">
-                                Installing
-                            </span>
-                        </div>
-                    ) : (
-                        <div className="flex items-center gap-1.5 min-w-0">
-                            <span className={cn("size-1.5 rounded-full transition-colors shrink-0", statusDotClass)} />
-                            <span className="text-[10px] text-muted-foreground tracking-wide uppercase shrink-0">
-                                {statusLabel}
-                            </span>
-                            {connectionStatus === "disconnected" && screenpipeError && (
-                                <span className="text-[10px] text-destructive truncate max-w-[280px]" title={screenpipeError}>
-                                    {screenpipeError}
-                                </span>
-                            )}
-                        </div>
-                    )}
+                        )}
+                    </div>
                 </div>
 
                 {/* Actions */}
@@ -1079,33 +853,7 @@ export default function Dashboard() {
                     )}
 
                     {/* Action button */}
-                    {!mounted ? null : isTauri() && !isLocalWhisper && !isDirectDeepgram && screenpipeInstalled === false && !installing ? (
-                        <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={handleInstallScreenpipe}
-                            className="gap-1"
-                        >
-                            <Download weight="bold" className="size-3" />
-                            Install
-                        </Button>
-                    ) : isTauri() && !isLocalWhisper && !isDirectDeepgram && installing ? (
-                        <div className="flex items-center gap-2 px-2">
-                            {installProgress && (
-                                <>
-                                    <div className="w-20 h-1 bg-muted overflow-hidden">
-                                        <div
-                                            className="h-full bg-primary transition-[width] duration-300"
-                                            style={{ width: `${installProgress.percent}%` }}
-                                        />
-                                    </div>
-                                    <span className="text-[10px] text-muted-foreground tabular-nums">
-                                        {installProgress.percent}%
-                                    </span>
-                                </>
-                            )}
-                        </div>
-                    ) : isTauri() ? (
+                    {mounted && isTauri() && (
                         <Button
                             variant={connectionStatus === "connected" ? "ghost" : "outline"}
                             size="xs"
@@ -1117,30 +865,6 @@ export default function Dashboard() {
                                 <CircleNotch weight="bold" className="size-3 animate-spin" />
                             ) : connectionStatus === "connected" ? "Stop" : "Start"}
                         </Button>
-                    ) : (
-                        <>
-                            <Button
-                                variant="outline"
-                                size="xs"
-                                onClick={() => health.refetch()}
-                                disabled={connectionStatus === "checking"}
-                            >
-                                {connectionStatus === "checking" ? (
-                                    <CircleNotch weight="bold" className="size-3 animate-spin" />
-                                ) : "Test"}
-                            </Button>
-                            {connectionStatus === "disconnected" && (
-                                <a
-                                    href="https://docs.screenpi.pe/getting-started"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1"
-                                >
-                                    Setup
-                                    <ArrowSquareOut weight="bold" className="size-2.5" />
-                                </a>
-                            )}
-                        </>
                     )}
 
                     <div className="w-px h-4 bg-border" />
@@ -1150,6 +874,8 @@ export default function Dashboard() {
                         size="icon-xs"
                         onClick={() => setSettingsOpen((o) => !o)}
                         className="text-muted-foreground hover:text-foreground"
+                        aria-label="Settings"
+                        title="Settings"
                     >
                         <GearSix weight="bold" className="size-3.5" />
                     </Button>
@@ -1298,7 +1024,7 @@ export default function Dashboard() {
                         settings={settings}
                         onChange={setSettings}
                         connectionStatus={connectionStatus}
-                        statusMessage={screenpipeError || tauriScreenpipeStatus?.message}
+                        statusMessage={captureError ?? undefined}
                     />
                 </DialogContent>
             </Dialog>

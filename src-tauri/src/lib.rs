@@ -1,22 +1,40 @@
+pub mod local_ai;
+pub mod overlay;
+pub mod screenshot;
+pub mod audio_device;
 pub mod commands;
 pub mod errors;
-pub mod screenpipe;
 pub mod session;
-pub mod state;
 pub mod transcription;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tauri::{Manager, Emitter};
+use tauri::Manager;
 
-use screenpipe::manager::ScreenpipeManager;
 use transcription::transcript::TranscriptBuffer;
-use transcription::whisper_stream::WhisperStreamManager;
+use transcription::local_stream::LocalSttManager;
 use transcription::deepgram_stream::DirectDeepgramStreamManager;
 use session::manager::SessionManager;
 
+/// Windows launches from Explorer have no `HOME`. OriginLM's OpenCode adapter
+/// resolves the service descriptor from `HOME` (its discovery already falls
+/// back to `USERPROFILE`), so give the process the same home those tools use.
+#[cfg(windows)]
+fn ensure_home() {
+    if std::env::var_os("HOME").is_none() {
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            std::env::set_var("HOME", profile);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn ensure_home() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    ensure_home();
+
     let mut builder = tauri::Builder::default();
 
     // Expose MCP tooling only in dev/debug runs.
@@ -28,41 +46,28 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_http::init())
         .setup(|app| {
-            let screenpipe = Arc::new(Mutex::new(ScreenpipeManager::new()));
             let transcript = Arc::new(Mutex::new(TranscriptBuffer::new(120)));
             let session = Arc::new(Mutex::new(SessionManager::new()));
-            let whisper_stream = Arc::new(Mutex::new(WhisperStreamManager::new()));
+            let local_stt = Arc::new(Mutex::new(LocalSttManager::new()));
             let direct_deepgram_stream = Arc::new(Mutex::new(DirectDeepgramStreamManager::new()));
 
-            app.manage(screenpipe.clone());
             app.manage(transcript.clone());
             app.manage(session.clone());
-            app.manage(whisper_stream.clone());
+            app.manage(local_stt.clone());
             app.manage(direct_deepgram_stream.clone());
+            app.manage(local_ai::LocalAi::default());
+            app.manage(overlay::OverlayManager::default());
 
-            // Start health monitoring task
-            let screenpipe_clone = screenpipe.clone();
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    let mut mgr = screenpipe_clone.lock().await;
-                    let status = mgr.check_health().await;
-                    let _ = app_handle.emit("screenpipe-status", &status);
-                }
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                transcription::model_manager::cleanup_legacy_models(&handle)
             });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::start_screenpipe,
-            commands::stop_screenpipe,
-            commands::get_screenpipe_status,
-            commands::get_audio_devices,
-            commands::update_screenpipe_config,
-            commands::check_screenpipe_installed,
-            commands::install_screenpipe,
             commands::start_session,
             commands::end_session,
             commands::get_session_config,
@@ -72,12 +77,10 @@ pub fn run() {
             commands::fetch_lmstudio_models,
             commands::load_templates,
             commands::list_system_audio_devices,
-            commands::list_whisper_models,
-            commands::get_selected_whisper_model,
-            commands::set_selected_whisper_model,
-            commands::download_whisper_model,
-            commands::is_moonshine_model_installed,
-            commands::download_moonshine_model,
+            commands::list_stt_models,
+            commands::get_selected_stt_model,
+            commands::set_selected_stt_model,
+            commands::download_stt_model,
             commands::get_local_transcription_gpu_status,
             commands::open_external_url,
             commands::proxy_tts_synthesize,
@@ -90,7 +93,35 @@ pub fn run() {
             commands::update_direct_deepgram_transcription,
             commands::stop_direct_deepgram_transcription,
             commands::set_deepgram_mute,
+            local_ai::local_ai_models,
+            local_ai::local_ai_complete,
+            local_ai::local_ai_cancel,
+            screenshot::capture_screenshot,
+            overlay::set_overlay_enabled,
+            overlay::apply_overlay_config,
+            overlay::toggle_overlay_visibility,
+            overlay::hide_overlay,
+            overlay::center_overlay,
+            overlay::set_overlay_click_through,
+            overlay::publish_overlay_content,
+            overlay::get_overlay_state,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .on_window_event(|window, event| {
+            overlay::handle_window_event(window.app_handle(), window.label(), event)
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Stop any AI client process OriginLM started for us.
+                local_ai::shutdown(&app.state::<local_ai::LocalAi>());
+                // Release audio devices promptly.
+                if let Ok(mut stt) = app
+                    .state::<Arc<Mutex<LocalSttManager>>>()
+                    .try_lock()
+                {
+                    stt.stop();
+                }
+            }
+        });
 }

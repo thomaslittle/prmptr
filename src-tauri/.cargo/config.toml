@@ -1,15 +1,19 @@
 # Build-time environment for native deps.
 #
-# CMAKE_CUDA_FLAGS is required when compiling whisper.cpp against CUDA 13.x
-# with MSVC: CCCL (shipped with CUDA 13) hard-errors under cl.exe's legacy
-# preprocessor. `/Zc:preprocessor` opts into the conforming preprocessor.
-# whisper-rs-sys forwards any CMAKE_* / WHISPER_* env var into its cmake call.
+# One C runtime for the whole process: the dynamic *release* CRT (/MD), which
+# is also what sherpa-onnx's prebuilt ONNX Runtime DLLs use. Without this,
+# CMake builds transcribe.cpp's Debug configuration (/MDd) in `cargo build` /
+# `tauri dev`, and memory crossing between the debug and release CRT heaps
+# trips `_CrtIsValidHeapPointer` the moment a model runs. (Same fix hex uses;
+# it pins the static runtime because it ships no ONNX DLLs.)
 #
-# CUDA_PATH must point at an installed CUDA toolkit that MATCHES the highest
-# "CUDA X.Y Build Customizations" present in Visual Studio
-# (%ProgramFiles(x86)%\Microsoft Visual Studio\2022\*\MSBuild\Microsoft\VC\
-#  v170\BuildCustomizations\CUDA X.Y.targets). A mismatch produces
-#  "The CUDA Toolkit directory '' does not exist" during cmake configure.
+# transcribe-cpp-sys reads CMAKE_ARGS. The Vulkan shader subset keeps the
+# optional `vulkan` build small: every catalog model is f32/f16/q8_0.
+#
+# CMAKE_CUDA_FLAGS: CCCL (CUDA 13) hard-errors under cl.exe's legacy
+# preprocessor; `/Zc:preprocessor` opts into the conforming one (`cuda`
+# feature only).
 
 [env]
+CMAKE_ARGS = "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DGGML_VULKAN_SHADER_TYPES=f32,f16,q8_0 -DGGML_VULKAN_MUL_MAT_ID=OFF"
 CMAKE_CUDA_FLAGS = "-Xcompiler=-fPIC -Xcompiler=/Zc:preprocessor"

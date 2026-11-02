@@ -6,23 +6,33 @@ import { ErrorBoundary } from "@/components/error-boundary";
 const subscribeNoop = () => () => {};
 import {
     FeedItem,
-    LLMProvider,
     SessionConfig,
     ResponseEntry,
     AppSettings,
 } from "@/lib/types";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { glossaryPromptLine } from "@/lib/glossary";
 import { useSessionStore } from "@/lib/stores/session-store";
 import { buildSystemPrompt, buildUserMessage, buildChatPrompt, truncateFeedItems, DeviceNames } from "@/lib/prompt-builder";
 import { selectBestSpokenLine } from "@/lib/spoken-line";
 import { normalizeGluedMarkdown } from "@/lib/markdown-normalize";
-import { isTauri, captureNativeScreenshotViaTauri } from "@/lib/tauri";
-import { isCliSubscriptionProvider, CliSubscriptionId } from "@/lib/cli-providers";
+import { sessionModelLabel } from "@/lib/model-display";
+import {
+    LlmCall,
+    RateLimitError,
+    fallbackModelForProvider,
+    fetchModelImageSupport,
+    modelSupportsImageInput,
+    providerNeedsApiKey,
+    streamCompletion,
+} from "@/lib/llm-client";
+import { LlmRequestError, formatLlmErrorMarkdown, type LlmErrorInfo } from "@/lib/llm-errors";
+import { captureScreenshot } from "@/lib/tauri";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Lightning, PaperPlaneTilt, Eraser, CircleNotch, Brain, ChatCircle, Lightbulb, PushPin } from "@phosphor-icons/react";
+import { Lightning, PaperPlaneTilt, Eraser, CircleNotch, Brain, ChatCircle, Lightbulb, PushPin, WarningCircle } from "@phosphor-icons/react";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
 
 interface AiResponseProps {
@@ -36,242 +46,9 @@ interface AiResponseProps {
     devices?: DeviceNames;
 }
 
-/** Thrown on HTTP 429 so callers can handle rate limits with backoff. */
-class RateLimitError extends Error {
-    retryAfterMs: number;
-    constructor(message: string, retryAfterMs: number) {
-        super(message);
-        this.name = "RateLimitError";
-        this.retryAfterMs = retryAfterMs;
-    }
-}
-
-/** Stream from /api/llm and call onToken for each chunk. Returns the full response text. */
-type LlmBody = Record<string, unknown>;
-type ProviderModelMeta = { id: string; supportsImageInput?: boolean };
-type ProviderModelsResponse = { models?: Array<string | ProviderModelMeta> };
-type CachedCapabilityMap = {
-    expiresAt: number;
-    byId: Record<string, boolean | undefined>;
-};
-
-const providerModelCapabilityCache = new Map<string, CachedCapabilityMap>();
-const PROVIDER_MODEL_CAPABILITY_TTL_MS = 5 * 60_000;
-
-function modelSupportsImageInput(provider: LLMProvider, model: string): boolean {
-    const id = model.toLowerCase();
-
-    // Generic vision/multimodal markers used across OpenAI-compatible providers.
-    const hasVisionMarker =
-        /\b(vision|vl|multimodal|omni)\b/.test(id) ||
-        /(gpt-4o|gpt-4\.1|llava|pixtral|qwen2\.?5-vl|gemma-3|llama-3\.2-.*vision|llama-4)/.test(id);
-
-    // LM Studio/OpenAI are typically most permissive for image_url content.
-    if (provider === "lmstudio" || provider === "openai") {
-        return hasVisionMarker || /(gpt-4o|gpt-4\.1)/.test(id);
-    }
-
-    // CLI subscriptions: Claude models are all vision-capable; Codex gpt-5
-    // family accepts input_image; OpenCode mirrors the Zen heuristics.
-    if (provider === "claude-cli") return true;
-    if (provider === "codex-cli") return true;
-    if (provider === "opencode-cli") return hasVisionMarker;
-
-    // Groq/Cerebras support depends on the selected model; only send when model appears multimodal.
-    if (provider === "groq" || provider === "cerebras") {
-        return hasVisionMarker;
-    }
-
-    return false;
-}
-
-async function fetchModelImageSupportExact(params: {
-    provider: LLMProvider;
-    model: string;
-    apiKey?: string;
-    baseUrl?: string;
-}): Promise<boolean | undefined> {
-    const { provider, model, apiKey, baseUrl } = params;
-    const cacheKey = `${provider}|${apiKey || ""}|${baseUrl || ""}`;
-    const now = Date.now();
-    const cached = providerModelCapabilityCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
-        return cached.byId[model];
-    }
-
-    const body: { provider: LLMProvider; apiKey?: string; baseUrl?: string } = {
-        provider,
-    };
-    if (provider !== "lmstudio" && apiKey) body.apiKey = apiKey;
-    if (provider === "lmstudio" && baseUrl) body.baseUrl = baseUrl;
-
-    try {
-        const resp = await fetch("/api/provider-models", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-        if (!resp.ok) return undefined;
-        const data = (await resp.json()) as ProviderModelsResponse;
-        const byId: Record<string, boolean | undefined> = {};
-        for (const entry of data.models ?? []) {
-            if (typeof entry === "string") {
-                byId[entry] = undefined;
-                continue;
-            }
-            if (!entry?.id) continue;
-            byId[entry.id] =
-                typeof entry.supportsImageInput === "boolean"
-                    ? entry.supportsImageInput
-                    : undefined;
-        }
-        providerModelCapabilityCache.set(cacheKey, {
-            byId,
-            expiresAt: now + PROVIDER_MODEL_CAPABILITY_TTL_MS,
-        });
-        return byId[model];
-    } catch {
-        return undefined;
-    }
-}
-
-function isRateLimitMessage(msg: string): boolean {
-    return msg.includes("429") || msg.includes("rate_limit");
-}
-
-function fallbackModelForProvider(provider: "groq" | "cerebras"): string {
-    return provider === "groq" ? "llama-3.1-8b-instant" : "llama-3.1-8b";
-}
-
-/** CLI subscription providers resolve credentials server-side — no key needed. */
-function providerNeedsApiKey(provider: LLMProvider): boolean {
-    return provider !== "lmstudio" && !isCliSubscriptionProvider(provider);
-}
-
-async function streamFromLLMOnce(
-    body: LlmBody,
-    onToken: (fullText: string) => void,
-    signal?: AbortSignal
-): Promise<string> {
-    const response = await fetch("/api/llm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal,
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text().catch(() => "");
-        if (response.status === 429) {
-            let retryAfterMs = 15_000;
-            const match = errorText.match(/try again in ([\d.]+)s/i);
-            if (match) retryAfterMs = Math.ceil(parseFloat(match[1]) * 1000) + 500;
-            const retryHeader = response.headers.get("retry-after");
-            if (retryHeader) retryAfterMs = parseInt(retryHeader) * 1000;
-            throw new RateLimitError(
-                `Rate limited - retry in ${Math.ceil(retryAfterMs / 1000)}s`,
-                retryAfterMs
-            );
-        }
-        throw new Error(`LLM request failed (${response.status}): ${errorText || response.statusText}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("No response body");
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let fullResponse = "";
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            try {
-                const data = JSON.parse(line.slice(6));
-                if (data.type === "token") {
-                    fullResponse += data.text;
-                    onToken(fullResponse);
-                    continue;
-                }
-                if (data.type === "error") {
-                    const msg: string = data.message || "";
-                    if (isRateLimitMessage(msg)) {
-                        const retryMatch = msg.match(/try again in ([\d.]+)s/i);
-                        const retryMs = retryMatch
-                            ? Math.ceil(parseFloat(retryMatch[1]) * 1000) + 500
-                            : 15_000;
-                        throw new RateLimitError(
-                            `Rate limited - retry in ${Math.ceil(retryMs / 1000)}s`,
-                            retryMs
-                        );
-                    }
-                    fullResponse += `\n\nError: ${msg}`;
-                    onToken(fullResponse);
-                }
-            } catch (e) {
-                if (e instanceof RateLimitError) throw e;
-            }
-        }
-    }
-
-    return fullResponse;
-}
-
-async function streamFromLLM(
-    body: LlmBody,
-    onToken: (fullText: string) => void,
-    signal?: AbortSignal,
-    fallbackBodies: LlmBody[] = []
-): Promise<string> {
-    const attempts = [body, ...fallbackBodies];
-    let lastRateLimitError: RateLimitError | null = null;
-
-    for (let i = 0; i < attempts.length; i++) {
-        try {
-            return await streamFromLLMOnce(attempts[i], onToken, signal);
-        } catch (err) {
-            if (
-                err instanceof RateLimitError &&
-                i < attempts.length - 1 &&
-                !signal?.aborted
-            ) {
-                lastRateLimitError = err;
-                onToken("");
-                continue;
-            }
-            throw err;
-        }
-    }
-
-    throw lastRateLimitError ?? new Error("LLM request failed");
-}
-
-async function fetchLatestScreenFrame(screenpipeUrl?: string): Promise<string | undefined> {
-    if (isTauri()) {
-        const native = await captureNativeScreenshotViaTauri();
-        if (native) return native;
-    }
-    if (!screenpipeUrl) return undefined;
-    try {
-        const resp = await fetch(`/api/screen-frame?screenpipeUrl=${encodeURIComponent(screenpipeUrl)}`, {
-            method: "GET",
-        });
-        if (!resp.ok) return undefined;
-        const data = (await resp.json()) as { ok?: boolean; imageDataUrl?: string };
-        if (!data?.ok || typeof data.imageDataUrl !== "string" || !data.imageDataUrl.trim()) {
-            return undefined;
-        }
-        return data.imageDataUrl;
-    } catch {
-        return undefined;
-    }
+/** "Your AI apps" selected but no concrete model picked yet (e.g. after migration). */
+function needsLocalAiModel(config: SessionConfig): boolean {
+    return config.provider === "local-ai" && (!config.model || !config.localAi?.routeId);
 }
 
 async function optimizeImageDataUrl(dataUrl: string): Promise<string> {
@@ -452,6 +229,20 @@ const CATEGORY_ICONS: Record<SectionCategory, typeof Lightning> = {
     context: PushPin,
 };
 
+/** A classified provider failure: what happened, where, and what to do. */
+function LlmErrorCard({ info }: { info: LlmErrorInfo }) {
+    return (
+        <div role="alert" className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5">
+            <WarningCircle weight="fill" className="size-3.5 shrink-0 mt-0.5 text-destructive" aria-hidden />
+            <div className="min-w-0 space-y-1 text-xs leading-relaxed">
+                <p className="font-medium text-foreground">{info.title}</p>
+                <p className="text-muted-foreground break-words">{info.detail}</p>
+                <p className="text-foreground/80">→ {info.action}</p>
+            </div>
+        </div>
+    );
+}
+
 function ResponseContent({ content, plain = false }: { content: string; plain?: boolean }) {
     // Model output is untrusted — a malformed stream must not unmount the app.
     return (
@@ -536,6 +327,30 @@ export default function AiResponse({
     );
     const [currentResponse, setCurrentResponse] = useState("");
     const [isStreaming, setIsStreaming] = useState(false);
+    // The last classified failure and the text it published to
+    // `currentResponse` (the overlay mirrors that text). The card renders only
+    // while `currentResponse` still holds exactly that text, so any new stream
+    // or clear implicitly retires it.
+    const [lastError, setLastError] = useState<{ text: string; info: LlmErrorInfo } | null>(null);
+    const showLlmError = useCallback((info: LlmErrorInfo) => {
+        const text = formatLlmErrorMarkdown(info);
+        setLastError({ text, info });
+        setCurrentResponse(text);
+    }, []);
+
+    // AiResponse is the only LLM stream owner. Mirror its presentation state so
+    // optional consumers (the always-on-top overlay) observe the same stream
+    // without issuing a second request.
+    useEffect(() => {
+        useSessionStore.getState().setCurrentResponse(currentResponse);
+    }, [currentResponse]);
+    useEffect(() => {
+        useSessionStore.getState().setIsStreaming(isStreaming);
+    }, [isStreaming]);
+    useEffect(() => () => {
+        useSessionStore.getState().setCurrentResponse("");
+        useSessionStore.getState().setIsStreaming(false);
+    }, []);
     const [chatInput, setChatInput] = useState("");
     const [streamingType, setStreamingType] = useState<"analysis" | "chat">("analysis");
     const [streamingUserMessage, setStreamingUserMessage] = useState("");
@@ -595,9 +410,9 @@ export default function AiResponse({
         const keys = apiKeysRef.current;
         const lmUrl = lmstudioUrlRef.current;
         const isLmStudio = config.provider === "lmstudio";
-        const apiKey = isLmStudio || isCliSubscriptionProvider(config.provider)
-            ? ""
-            : keys[config.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>] || "";
+        const apiKey = providerNeedsApiKey(config.provider)
+            ? keys[config.provider as keyof typeof keys] || ""
+            : "";
         const lmBaseUrl = (() => {
             const raw = (lmUrl || "http://localhost:1234").trim().replace(/\/+$/, "");
             return raw.endsWith("/v1") ? raw : `${raw}/v1`;
@@ -608,11 +423,11 @@ export default function AiResponse({
             model: config.model,
             apiKey: apiKey || "",
             baseUrl: isLmStudio ? lmBaseUrl : undefined,
-            ...(config.subProvider ? { subProvider: config.subProvider } : {}),
+            ...(config.provider === "local-ai" && config.localAi ? { localAi: config.localAi } : {}),
         };
     }, []);
 
-    const getRateLimitFallbackBodies = useCallback((baseBody: LlmBody): LlmBody[] => {
+    const getRateLimitFallbackBodies = useCallback((baseBody: LlmCall): LlmCall[] => {
         const config = sessionConfigRef.current;
         const keys = apiKeysRef.current;
         if (config.provider === "groq" && keys.cerebras) {
@@ -684,13 +499,13 @@ export default function AiResponse({
         // No message here — this is expected for auto/smart polling
         if (newItems.length === 0 && config.triggerMode !== "manual") return;
 
-        const isLmStudio = config.provider === "lmstudio";
-        const apiKey =
-            isLmStudio || isCliSubscriptionProvider(config.provider)
-                ? ""
-                : keys[config.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>];
+        const apiKey = providerNeedsApiKey(config.provider) ? keys[config.provider as keyof typeof keys] : "";
         if (providerNeedsApiKey(config.provider) && !apiKey) {
             setStatusMessage(`No API key for ${config.provider}`);
+            return;
+        }
+        if (needsLocalAiModel(config)) {
+            setStatusMessage("Pick a model from Your AI apps first");
             return;
         }
 
@@ -748,13 +563,13 @@ export default function AiResponse({
 
             const systemPrompt = useDirectQuestionMode
                 ? "You are a real-time voice copilot. Return exactly one short spoken sentence that directly answers the user's latest question. No banter, no jokes, no quotes, no markdown, no roleplay, no preamble."
-                : buildSystemPrompt(config);
+                : buildSystemPrompt(config) + glossaryPromptLine(useSettingsStore.getState().settings.glossary);
             const userMessage = useDirectQuestionMode
                 ? `Latest question: ${latestQuestion}\nAnswer this directly in one short spoken sentence.`
                 : buildUserMessage(truncatedNew, truncatedContext, config.personality, devicesRef.current);
             const outTokens = useDirectQuestionMode ? 80 : config.responseStyle === "ai-voice" ? 160 : config.responseStyle === "concise" ? 320 : 640;
 
-            const primaryBody: LlmBody = {
+            const primaryBody: LlmCall = {
                 systemPrompt,
                 userMessage,
                 ...getLLMConfig(),
@@ -763,9 +578,10 @@ export default function AiResponse({
             };
             if (
                 settings.includeScreenshotOnAnalyze &&
-                (
-                    (
-                        await fetchModelImageSupportExact({
+                (config.provider === "local-ai"
+                    ? config.localAi?.supportsImageInput === true
+                    : (
+                        await fetchModelImageSupport({
                             provider: config.provider,
                             model: config.model,
                             apiKey: typeof primaryBody.apiKey === "string" ? primaryBody.apiKey : undefined,
@@ -774,7 +590,7 @@ export default function AiResponse({
                     ) ?? modelSupportsImageInput(config.provider, config.model)
                 )
             ) {
-                const imageDataUrl = await fetchLatestScreenFrame(settings.screenpipeUrl);
+                const imageDataUrl = await captureScreenshot();
                 if (imageDataUrl) {
                     const optimized = await optimizeImageDataUrl(imageDataUrl);
                     primaryBody.imageDataUrl = optimized;
@@ -786,7 +602,7 @@ export default function AiResponse({
             } else if (settings.includeScreenshotOnAnalyze) {
                 primaryBody.userMessage = `${String(primaryBody.userMessage)}\n\n[VISUAL_CONTEXT_ATTACHED=unsupported_provider]`;
             }
-            const fullResponse = await streamFromLLM(
+            const fullResponse = await streamCompletion(
                 primaryBody,
                 setCurrentResponse,
                 controller.signal,
@@ -802,7 +618,7 @@ export default function AiResponse({
             ) {
                 const latestQuestion = extractLatestQuestion(truncatedNew);
                 if (latestQuestion) {
-                    const fixBody: LlmBody = {
+                    const fixBody: LlmCall = {
                         ...getLLMConfig(),
                         systemPrompt:
                             "Return exactly one short factual sentence answering the question directly. No banter, no sarcasm, no roleplay, no quotes.",
@@ -810,7 +626,7 @@ export default function AiResponse({
                         maxTokens: 64,
                         temperature: 0.1,
                     };
-                    const fixed = await streamFromLLM(
+                    const fixed = await streamCompletion(
                         fixBody,
                         setCurrentResponse,
                         controller.signal,
@@ -826,7 +642,7 @@ export default function AiResponse({
                     id: `resp-${Date.now()}`,
                     content: normalizedResponse,
                     timestamp: new Date().toISOString(),
-                    model: config.model,
+                    model: sessionModelLabel(config),
                     type: "analysis",
                     screenshotDataUrl: attachedScreenshotDataUrl,
                 };
@@ -847,6 +663,8 @@ export default function AiResponse({
                 setStatusMessage(`Rate limited — retrying in ${secs}s`);
             } else if (controller.signal.aborted) {
                 setCurrentResponse("Request timed out after 45s. Try again or switch models.");
+            } else if (err instanceof LlmRequestError) {
+                showLlmError(err.info);
             } else {
                 setCurrentResponse(
                     `Failed to get response: ${err instanceof Error ? err.message : "Unknown error"}`
@@ -861,7 +679,7 @@ export default function AiResponse({
             // Reset gate tracking so new items arriving after analysis get a fresh evaluation
             gateCheckedIdsRef.current.clear();
         }
-    }, [addResponse, getLLMConfig, getRateLimitFallbackBodies]);
+    }, [addResponse, getLLMConfig, getRateLimitFallbackBodies, settings.includeScreenshotOnAnalyze, showLlmError]);
 
     /** Local heuristic gate for smart mode — no API call, instant, reliable. */
     const shouldSmartTrigger = useCallback((): boolean => {
@@ -929,13 +747,13 @@ export default function AiResponse({
 
         const config = sessionConfigRef.current;
         const keys = apiKeysRef.current;
-        const isLmStudio = config.provider === "lmstudio";
-        const apiKey =
-            isLmStudio || isCliSubscriptionProvider(config.provider)
-                ? ""
-                : keys[config.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>];
+        const apiKey = providerNeedsApiKey(config.provider) ? keys[config.provider as keyof typeof keys] : "";
         if (providerNeedsApiKey(config.provider) && !apiKey) {
             setStatusMessage(`No API key for ${config.provider}`);
+            return;
+        }
+        if (needsLocalAiModel(config)) {
+            setStatusMessage("Pick a model from Your AI apps first");
             return;
         }
 
@@ -959,22 +777,23 @@ export default function AiResponse({
                 config.provider === "lmstudio"
                     ? { ...config, contextSize: Math.min(config.contextSize || 6000, 2800) }
                     : config;
-            const { systemPrompt, userMessage } = buildChatPrompt(
+            const { systemPrompt: chatSystemPrompt, userMessage } = buildChatPrompt(
                 question,
                 currentResponses,
                 feedItemsRef.current,
                 chatConfig,
                 devicesRef.current
             );
+            const systemPrompt = chatSystemPrompt + glossaryPromptLine(useSettingsStore.getState().settings.glossary);
 
-            const primaryBody: LlmBody = {
+            const primaryBody: LlmCall = {
                 systemPrompt,
                 userMessage,
                 ...getLLMConfig(),
                 maxTokens: 768,
                 temperature: 0.5,
             };
-            const fullResponse = await streamFromLLM(
+            const fullResponse = await streamCompletion(
                 primaryBody,
                 setCurrentResponse,
                 controller.signal,
@@ -986,7 +805,7 @@ export default function AiResponse({
                     id: `chat-${Date.now()}`,
                     content: fullResponse,
                     timestamp: new Date().toISOString(),
-                    model: config.model,
+                    model: sessionModelLabel(config),
                     type: "chat",
                     userMessage: question,
                 };
@@ -1003,6 +822,8 @@ export default function AiResponse({
                 setStatusMessage(`Rate limited — wait ${secs}s and try again`);
             } else if (controller.signal.aborted) {
                 setCurrentResponse("Request timed out after 45s. Try again or switch models.");
+            } else if (err instanceof LlmRequestError) {
+                showLlmError(err.info);
             } else {
                 setCurrentResponse(
                     `Failed to get response: ${err instanceof Error ? err.message : "Unknown error"}`
@@ -1015,7 +836,7 @@ export default function AiResponse({
             setIsStreaming(false);
             setStreamingUserMessage("");
         }
-    }, [chatInput, addResponse, getLLMConfig, getRateLimitFallbackBodies]);
+    }, [chatInput, addResponse, getLLMConfig, getRateLimitFallbackBodies, showLlmError]);
 
     useEffect(() => {
         if (autoTimerRef.current) {
@@ -1098,9 +919,11 @@ export default function AiResponse({
         }
     }, [clearCount, clearAll]);
 
-    const hasApiKey =
+    const hasProviderKey =
         !providerNeedsApiKey(sessionConfig.provider) ||
-        !!apiKeys[sessionConfig.provider as Exclude<LLMProvider, "lmstudio" | CliSubscriptionId>];
+        !!apiKeys[sessionConfig.provider as keyof typeof apiKeys];
+    const missingLocalAiModel = needsLocalAiModel(sessionConfig);
+    const hasApiKey = hasProviderKey && !missingLocalAiModel;
     const plainAiVoiceOutput = sessionConfig.responseStyle === "ai-voice";
 
     return (
@@ -1131,7 +954,9 @@ export default function AiResponse({
                         </EmptyMedia>
                         <EmptyHeader>
                             <EmptyTitle className="text-[11px] font-normal text-muted-foreground/50">
-                                Add an API key in Settings to enable analysis
+                                {missingLocalAiModel
+                                    ? "Pick a model from Your AI apps to enable analysis"
+                                    : "Add an API key in Settings to enable analysis"}
                             </EmptyTitle>
                         </EmptyHeader>
                     </Empty>
@@ -1166,7 +991,7 @@ export default function AiResponse({
                                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground/50">
                                     <span className="tabular-nums">{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                                     <span className="text-muted-foreground/20">/</span>
-                                    <span className="truncate">{sessionConfig.model}</span>
+                                    <span className="truncate">{sessionModelLabel(sessionConfig)}</span>
                                 </div>
                                 <div>
                                     {currentResponse ? (
@@ -1187,7 +1012,11 @@ export default function AiResponse({
                         {/* Error displayed outside streaming */}
                         {!isStreaming && currentResponse && (
                             <div className="space-y-2">
-                                <ResponseContent content={currentResponse} plain={plainAiVoiceOutput} />
+                                {lastError && lastError.text === currentResponse ? (
+                                    <LlmErrorCard info={lastError.info} />
+                                ) : (
+                                    <ResponseContent content={currentResponse} plain={plainAiVoiceOutput} />
+                                )}
                             </div>
                         )}
 

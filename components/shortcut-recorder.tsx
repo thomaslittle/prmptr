@@ -9,7 +9,7 @@ interface ShortcutRecorderProps {
     onChange: (keys: string, label: string) => void;
 }
 
-export default function ShortcutRecorder({ value, label, onChange }: ShortcutRecorderProps) {
+export default function ShortcutRecorder({ label, onChange }: ShortcutRecorderProps) {
     const [recording, setRecording] = useState(false);
     const [modifierPreview, setModifierPreview] = useState("");
     const divRef = useRef<HTMLDivElement>(null);

@@ -19,15 +19,9 @@ const ACTION_TO_HANDLER: Record<ShortcutAction, keyof ShortcutHandlers> = {
 };
 
 function normalizeShortcutId(value: string): string {
-    const rawParts = value
-        .toLowerCase()
-        .split("+")
-        .map((p) => p.trim())
-        .filter(Boolean);
-
+    const rawParts = value.toLowerCase().split("+").map((p) => p.trim()).filter(Boolean);
     const modifiers = new Set<string>();
     let key = "";
-
     for (const part of rawParts) {
         const p = part
             .replace(/commandorcontrol/g, "ctrl")
@@ -35,24 +29,16 @@ function normalizeShortcutId(value: string): string {
             .replace(/^cmd$/, "meta")
             .replace(/^command$/, "meta")
             .replace(/^super$/, "meta");
-
         if (p === "ctrl" || p === "shift" || p === "alt" || p === "meta") {
             modifiers.add(p);
-            continue;
+        } else if (p.startsWith("key") && p.length === 4) {
+            key = p.slice(3);
+        } else if (p.startsWith("digit") && p.length === 6) {
+            key = p.slice(5);
+        } else {
+            key = p;
         }
-
-        if (p.startsWith("key") && p.length === 4) {
-            key = p.slice(3); // keyx -> x
-            continue;
-        }
-        if (p.startsWith("digit") && p.length === 6) {
-            key = p.slice(5); // digit2 -> 2
-            continue;
-        }
-
-        key = p;
     }
-
     const orderedMods = ["ctrl", "shift", "alt", "meta"].filter((m) => modifiers.has(m));
     return [...orderedMods, key].filter(Boolean).join("+");
 }
@@ -66,83 +52,75 @@ export function useShortcutManager(handlers: ShortcutHandlers) {
 
     const shortcuts = settings.shortcuts;
 
-    // Tauri mode: register OS-level global shortcuts (work when app is not focused)
     useEffect(() => {
         if (!isTauri()) return;
-
         let cancelled = false;
+        const owned: string[] = [];
 
-        (async () => {
+        void (async () => {
             try {
-                const { unregisterAll, register } = await import(
-                    "@tauri-apps/plugin-global-shortcut"
+                const { register } = await import("@tauri-apps/plugin-global-shortcut");
+                const tauriShortcuts = Object.entries(shortcuts).map(([action, binding]) => ({
+                    action: action as ShortcutAction,
+                    shortcut: toTauriGlobalShortcut(binding.keys),
+                }));
+                if (cancelled || tauriShortcuts.length === 0) return;
+
+                // Never unregister a shortcut before registration: the exact
+                // binding may belong to another optional subsystem. A collision
+                // is a configuration error and must fail rather than steal it.
+                await register(
+                    tauriShortcuts.map((entry) => entry.shortcut),
+                    (event) => {
+                        if (String(event.state).toLowerCase() !== "pressed") return;
+                        const normalized = normalizeShortcutId(event.shortcut);
+                        const entry = tauriShortcuts.find(
+                            (candidate) => normalizeShortcutId(candidate.shortcut) === normalized
+                        );
+                        if (!entry) return;
+                        handlersRef.current[ACTION_TO_HANDLER[entry.action]]?.();
+                    }
                 );
-
-                if (cancelled) return;
-
-                await unregisterAll();
-
-                const tauriShortcuts: string[] = [];
-                const shortcutToAction: Record<string, ShortcutAction> = {};
-
-                for (const [action, binding] of Object.entries(shortcuts)) {
-                    if (cancelled) return;
-                    const tauriFormat = toTauriGlobalShortcut(binding.keys);
-                    tauriShortcuts.push(tauriFormat);
-                    shortcutToAction[normalizeShortcutId(tauriFormat)] = action as ShortcutAction;
-                }
-
-                if (tauriShortcuts.length > 0) {
-                    await register(tauriShortcuts, (event) => {
-                        const state = String(event.state).toLowerCase();
-                        if (state !== "pressed") return;
-                        const action = shortcutToAction[normalizeShortcutId(event.shortcut)];
-                        if (action) {
-                            const handlerKey = ACTION_TO_HANDLER[action];
-                            handlersRef.current[handlerKey]?.();
-                        }
-                    });
-                }
+                owned.push(...tauriShortcuts.map((entry) => entry.shortcut));
             } catch (err) {
-                console.warn("Global shortcut registration failed:", err);
+                console.warn("Global shortcut registration failed (possibly a shortcut conflict):", err);
             }
         })();
 
         return () => {
             cancelled = true;
-            (async () => {
+            const cleanup = [...owned];
+            owned.length = 0;
+            void (async () => {
                 try {
-                    const { unregisterAll } = await import(
-                        "@tauri-apps/plugin-global-shortcut"
-                    );
-                    await unregisterAll();
+                    const { unregister } = await import("@tauri-apps/plugin-global-shortcut");
+                    for (const shortcut of cleanup) {
+                        try {
+                            await unregister(shortcut);
+                        } catch {
+                            // already removed by plugin/OS teardown
+                        }
+                    }
                 } catch {
-                    // ignore
+                    // ignore teardown errors
                 }
             })();
         };
     }, [shortcuts]);
 
-    // Browser mode: keydown listener for in-app shortcuts
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             const tag = (e.target as HTMLElement)?.tagName;
             if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-            // Check if target has data-shortcut-recorder attribute (recording in progress)
             if ((e.target as HTMLElement)?.closest("[data-shortcut-recorder]")) return;
 
             for (const [action, binding] of Object.entries(shortcuts)) {
-                const parsed = parseShortcut(binding.keys);
-                if (matchesKeyboardEvent(parsed, e)) {
-                    e.preventDefault();
-                    const handlerKey = ACTION_TO_HANDLER[action as ShortcutAction];
-                    handlersRef.current[handlerKey]?.();
-                    return;
-                }
+                if (!matchesKeyboardEvent(parseShortcut(binding.keys), e)) continue;
+                e.preventDefault();
+                handlersRef.current[ACTION_TO_HANDLER[action as ShortcutAction]]?.();
+                return;
             }
         };
-
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
     }, [shortcuts]);

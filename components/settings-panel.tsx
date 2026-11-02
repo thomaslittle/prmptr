@@ -10,18 +10,11 @@ import {
     isTauri,
     listSystemAudioDevices,
     listTtsVoicesViaTauri,
-    getLocalTranscriptionGpuStatus,
-    LocalGpuStatus,
-    openExternalUrl,
-    isMoonshineModelInstalled,
-    downloadMoonshineModel,
-    onWhisperModelDownloadProgress,
 } from "@/lib/tauri";
-import type { WhisperModelDownloadProgress } from "@/lib/tauri";
+import { SpeechModelSettings } from "@/components/speech-model-settings";
 import {
     Eye,
     EyeSlash,
-    Info,
     SpeakerHigh,
     SpeakerSlash,
     Microphone,
@@ -34,7 +27,6 @@ import {
     XCircle,
     ArrowCounterClockwise,
     Plug,
-    Globe,
     MicrophoneStage,
     Monitor,
 } from "@phosphor-icons/react";
@@ -45,15 +37,14 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { db, getPreference, setPreference } from "@/lib/db";
-import { useCliSubscriptions } from "@/lib/use-cli-subscriptions";
-import { CLI_SUBSCRIPTIONS } from "@/lib/cli-providers";
+import { getPreference, setPreference } from "@/lib/db";
+import { groupLocalAiModels, useLocalAiModels } from "@/lib/use-local-ai-models";
 
 const SETTINGS_TAB_KEY = "settings-tab";
 const SETTINGS_TABS = ["capture", "providers", "voice", "shortcuts"] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number];
 
-type CloudProvider = Exclude<LLMProvider, "lmstudio">;
+type CloudProvider = Exclude<LLMProvider, "lmstudio" | "local-ai">;
 
 const cloudProviders: { key: CloudProvider; label: string }[] = [
     { key: "anthropic", label: "Anthropic" },
@@ -145,6 +136,72 @@ function SectionCard({ children, className = "" }: { children: React.ReactNode; 
     );
 }
 
+/**
+ * "Your AI apps": models from AI clients the user already has signed in, run
+ * through OriginLM. Scans only while the Providers tab is open (or on Scan).
+ */
+function YourAiAppsCard({ active }: { active: boolean }) {
+    const query = useLocalAiModels(active);
+    const groups = useMemo(() => groupLocalAiModels(query.data ?? []), [query.data]);
+    const scanning = query.isFetching;
+    const error = query.error instanceof Error ? query.error.message : query.error ? String(query.error) : null;
+
+    return (
+        <SectionCard className="space-y-2">
+            <div className="flex items-start justify-between gap-2">
+                <SectionLabel icon={Plug} label="Your AI apps" />
+                <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={scanning || !isTauri()}
+                    onClick={() => void query.refetch()}
+                >
+                    {scanning ? (
+                        <CircleNotch weight="bold" className="size-3 animate-spin" />
+                    ) : (
+                        <ArrowCounterClockwise weight="bold" className="size-3" />
+                    )}
+                    {scanning ? "Scanning…" : "Scan"}
+                </Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground/60">
+                PRMPTR uses the AI apps you already have signed in — Claude Code, Codex, OpenCode, Gemini CLI,
+                Ollama, LM Studio — through OriginLM. Your logins never leave those apps.
+            </p>
+            {!isTauri() ? (
+                <p className="text-[11px] text-muted-foreground/60">Available in the PRMPTR desktop app.</p>
+            ) : error ? (
+                <p className="text-[11px] text-destructive/80">Scan failed: {error}</p>
+            ) : scanning && groups.length === 0 ? (
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <CircleNotch weight="bold" className="size-3 animate-spin" />
+                    Looking for your AI apps…
+                </div>
+            ) : groups.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground/60">
+                    {query.isFetched
+                        ? "No signed-in AI apps found. Sign in to one of them, then scan again."
+                        : "Scan to find the AI apps on this computer."}
+                </p>
+            ) : (
+                <ul className="space-y-1.5" aria-label="Detected AI apps">
+                    {groups.map(({ group, models }) => (
+                        <li key={group} className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                                <CheckCircle weight="fill" className="size-3 text-emerald-400 shrink-0" />
+                                <span className="text-[11px] font-medium text-foreground/80 truncate">{group}</span>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground/60 shrink-0 tabular-nums">
+                                {models.length} {models.length === 1 ? "model" : "models"}
+                            </span>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </SectionCard>
+    );
+}
+
 export default memo(function SettingsPanel({
     settings,
     onChange,
@@ -152,8 +209,6 @@ export default memo(function SettingsPanel({
     statusMessage,
 }: SettingsPanelProps) {
     const [activeTab, setActiveTab] = useState<SettingsTab>("capture");
-    const cliSubsQuery = useCliSubscriptions();
-    const cliDetected = (cliSubsQuery.data ?? []).filter((s) => s.detected);
 
     useEffect(() => {
         getPreference(SETTINGS_TAB_KEY).then((saved) => {
@@ -186,12 +241,6 @@ export default memo(function SettingsPanel({
 
     const [showDeepgramKey, setShowDeepgramKey] = useState(false);
     const [showTtsKey, setShowTtsKey] = useState(false);
-    const [localGpuStatus, setLocalGpuStatus] = useState<LocalGpuStatus | null>(null);
-    const [checkingGpuStatus, setCheckingGpuStatus] = useState(false);
-    const [moonshineInstalled, setMoonshineInstalled] = useState(false);
-    const [moonshineDownloading, setMoonshineDownloading] = useState(false);
-    const [moonshineProgress, setMoonshineProgress] = useState<WhisperModelDownloadProgress | null>(null);
-
     const [lmStudioStatus, setLmStudioStatus] = useState<"idle" | "testing" | "connected" | "error">("idle");
     const [testingVoice, setTestingVoice] = useState(false);
     const [voiceTestError, setVoiceTestError] = useState<string | null>(null);
@@ -204,7 +253,7 @@ export default memo(function SettingsPanel({
         gcTime: 10 * 60_000,
         refetchOnWindowFocus: false,
     });
-    const audioDevices = audioDevicesQuery.data ?? [];
+    const audioDevices = useMemo(() => audioDevicesQuery.data ?? [], [audioDevicesQuery.data]);
     const audioDevicesLoading = audioDevicesQuery.isLoading || audioDevicesQuery.isFetching;
     const inputDevices = audioDevices
         .filter((d) => d.name.endsWith(" (input)"))
@@ -222,8 +271,6 @@ export default memo(function SettingsPanel({
         if (!defaultDevice) return;
         onChange({ ...settings, audioDevice: defaultDevice.name });
     }, [audioDevices, settings, onChange]);
-
-    // Always use listSystemAudioDevices to stay aligned with Screenpipe device names.
 
     const testApiKey = useCallback(
         async (provider: CloudProvider) => {
@@ -259,50 +306,6 @@ export default memo(function SettingsPanel({
             setLmStudioStatus("error");
         }
     }, [settings.lmstudioUrl]);
-
-    const refreshGpuStatus = useCallback(async () => {
-        if (!isTauri()) return;
-        setCheckingGpuStatus(true);
-        try {
-            const status = await getLocalTranscriptionGpuStatus();
-            setLocalGpuStatus(status);
-        } catch {
-            setLocalGpuStatus(null);
-        } finally {
-            setCheckingGpuStatus(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            refreshGpuStatus().catch(() => {});
-        }, 0);
-        return () => clearTimeout(timer);
-    }, [refreshGpuStatus]);
-
-    // Moonshine model install state + download progress subscription
-    useEffect(() => {
-        if (!isTauri()) return;
-        let alive = true;
-        isMoonshineModelInstalled()
-            .then((installed) => {
-                if (alive) setMoonshineInstalled(installed);
-            })
-            .catch(() => {});
-        let unlisten: (() => void) | null = null;
-        onWhisperModelDownloadProgress((progress) => {
-            if (progress.model_id !== "moonshine-base") return;
-            setMoonshineProgress(progress);
-            if (progress.percent >= 100 || progress.stage === "Done") {
-                setMoonshineInstalled(true);
-                setMoonshineDownloading(false);
-            }
-        }).then((fn) => (unlisten = fn));
-        return () => {
-            alive = false;
-            unlisten?.();
-        };
-    }, []);
 
     const fallbackVoiceIds = useMemo(
         () => ["af_heart", "af_bella", "af_nova", "am_adam", "am_michael", "bf_emma", "bm_george"],
@@ -455,6 +458,8 @@ export default memo(function SettingsPanel({
                                     size="xs"
                                     className="h-6 px-2 text-[10px]"
                                     onClick={() => audioDevicesQuery.refetch()}
+                                    aria-label="Refresh audio devices"
+                                    title="Refresh audio devices"
                                     disabled={audioDevicesLoading}
                                 >
                                     {audioDevicesLoading ? (
@@ -597,7 +602,7 @@ export default memo(function SettingsPanel({
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "local-whisper" })}
                                         >
-                                            Local (Free)
+                                            Local (free, private)
                                         </Button>
                                         <Button
                                             variant={(settings.transcriptionMode ?? "local-whisper") === "direct-deepgram" ? "default" : "outline"}
@@ -605,20 +610,12 @@ export default memo(function SettingsPanel({
                                             className="flex-1 text-[10px]"
                                             onClick={() => onChange({ ...settings, transcriptionMode: "direct-deepgram" })}
                                         >
-                                            Direct Deepgram
-                                        </Button>
-                                        <Button
-                                            variant={(settings.transcriptionMode ?? "local-whisper") === "screenpipe" ? "default" : "outline"}
-                                            size="xs"
-                                            className="flex-1 text-[10px]"
-                                            onClick={() => onChange({ ...settings, transcriptionMode: "screenpipe" })}
-                                        >
-                                            Screenpipe + Deepgram
+                                            Deepgram (cloud)
                                         </Button>
                                     </div>
                                 </div>
 
-                                {(settings.transcriptionMode ?? "direct-deepgram") !== "local-whisper" ? (
+                                {(settings.transcriptionMode ?? "local-whisper") === "direct-deepgram" ? (
                                     <div className="space-y-1">
                                         <div className="flex items-center gap-1.5">
                                             <span className="text-[11px] text-foreground/70 font-medium">
@@ -654,9 +651,7 @@ export default memo(function SettingsPanel({
                                             </p>
                                         )}
                                         <p className="text-[9px] text-muted-foreground/50 mt-0.5">
-                                            {(settings.transcriptionMode ?? "direct-deepgram") === "screenpipe"
-                                                ? "Uses Screenpipe realtime routing with Deepgram."
-                                                : "Uses app-native dual capture routed directly to Deepgram."}
+                                            Uses app-native dual capture routed directly to Deepgram.
                                         </p>
                                     </div>
                                 ) : (
@@ -665,189 +660,12 @@ export default memo(function SettingsPanel({
                                             On-device transcription — free and private. Nothing leaves your machine.
                                         </p>
 
-                                        {/* Engine picker: Whisper vs Moonshine */}
-                                        <div>
-                                            <span className="text-[10px] text-foreground/60 font-medium mb-1 block">
-                                                Engine
-                                            </span>
-                                            <div className="flex gap-1">
-                                                <Button
-                                                    variant={(settings.localSttEngine ?? "whisper") === "whisper" ? "default" : "outline"}
-                                                    size="xs"
-                                                    className="flex-1 text-[10px]"
-                                                    onClick={() => onChange({ ...settings, localSttEngine: "whisper" })}
-                                                >
-                                                    Whisper
-                                                </Button>
-                                                <Button
-                                                    variant={settings.localSttEngine === "moonshine" ? "default" : "outline"}
-                                                    size="xs"
-                                                    className="flex-1 text-[10px]"
-                                                    disabled={!moonshineInstalled && !moonshineDownloading}
-                                                    onClick={() =>
-                                                        onChange({
-                                                            ...settings,
-                                                            localSttEngine: moonshineInstalled ? "moonshine" : settings.localSttEngine,
-                                                        })
-                                                    }
-                                                >
-                                                    {settings.localSttEngine === "moonshine" ? "Moonshine ✓" : "Moonshine"}
-                                                </Button>
-                                            </div>
-                                            {settings.localSttEngine === "moonshine" ? (
-                                                <p className="text-[9px] text-muted-foreground/50 mt-1">
-                                                    Moonshine base (int8): ~6× lower latency than Whisper, MIT licensed.
-                                                </p>
-                                            ) : null}
-                                            {!moonshineInstalled && (
-                                                <div className="mt-1.5 rounded-sm border border-border bg-background/40 p-2 space-y-1.5">
-                                                    <div className="flex items-center justify-between gap-2">
-                                                        <span className="text-[10px] text-foreground/70">
-                                                            Moonshine model (~240 MB, one-time download)
-                                                        </span>
-                                                        <Button
-                                                            size="xs"
-                                                            variant={moonshineInstalled ? "outline" : "default"}
-                                                            disabled={moonshineDownloading}
-                                                            onClick={() => {
-                                                                setMoonshineDownloading(true);
-                                                                setMoonshineProgress(null);
-                                                                downloadMoonshineModel()
-                                                                    .then(() => {
-                                                                        setMoonshineInstalled(true);
-                                                                        onChange({ ...settings, localSttEngine: "moonshine" });
-                                                                    })
-                                                                    .catch((err) =>
-                                                                        console.error("Moonshine download failed:", err)
-                                                                    )
-                                                                    .finally(() => setMoonshineDownloading(false));
-                                                            }}
-                                                        >
-                                                            {moonshineInstalled
-                                                                ? "Re-download"
-                                                                : moonshineDownloading
-                                                                    ? `${moonshineProgress?.stage ?? "Working"}${moonshineProgress?.percent ? ` ${moonshineProgress.percent}%` : "..."}`
-                                                                    : "Download"}
-                                                        </Button>
-                                                    </div>
-                                                    {moonshineDownloading && moonshineProgress?.total_bytes ? (
-                                                        <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
-                                                            <div
-                                                                className="h-full bg-primary transition-[width]"
-                                                                style={{ width: `${Math.min(100, moonshineProgress.percent)}%` }}
-                                                            />
-                                                        </div>
-                                                    ) : null}
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        <div className="rounded-sm border border-border bg-background/40 p-2">
-                                            <div className="flex items-center justify-between gap-2">
-                                                <div className="flex items-center gap-1.5">
-                                                    <span className="text-[10px] text-foreground/70">Use GPU for local transcription</span>
-                                                    {!localGpuStatus?.can_use_gpu && (
-                                                        <Tooltip>
-                                                            <TooltipTrigger
-                                                                render={
-                                                                    <button
-                                                                        type="button"
-                                                                        className="inline-flex size-4.5 items-center justify-center rounded-full border border-border/70 bg-background/60 text-muted-foreground transition-colors hover:border-sky-400/40 hover:bg-background hover:text-sky-300"
-                                                                        aria-label="Why GPU is disabled"
-                                                                    >
-                                                                        <Info weight="bold" className="size-3" />
-                                                                    </button>
-                                                                }
-                                                            />
-                                                            <TooltipContent
-                                                                variant="popover"
-                                                                side="top"
-                                                                align="start"
-                                                                sideOffset={8}
-                                                                className="max-w-[340px] rounded-md border border-border bg-popover/98 text-popover-foreground shadow-[0_14px_34px_-18px_rgba(56,189,248,0.55)] backdrop-blur-sm p-0"
-                                                            >
-                                                                <div className="px-3 py-2.5 border-b border-sky-300/10">
-                                                                    <div className="flex items-center gap-1.5">
-                                                                        <span className="size-1.5 rounded-full bg-amber-400" />
-                                                                        <p className="text-[10px] font-semibold tracking-wide text-sky-200/95">
-                                                                            GPU acceleration unavailable
-                                                                        </p>
-                                                                    </div>
-                                                                    <p className="mt-1 text-[10px] leading-relaxed text-foreground/85">
-                                                                        {localGpuStatus?.message ?? "Checking GPU/CUDA status..."}
-                                                                    </p>
-                                                                    {localGpuStatus?.cuda_toolkit_version && (
-                                                                        <p className="mt-1 text-[9px] text-sky-300/70">
-                                                                            Toolkit: {localGpuStatus.cuda_toolkit_version}
-                                                                        </p>
-                                                                    )}
-                                                                    {localGpuStatus && (
-                                                                        <div className="mt-2 grid grid-cols-3 gap-1 text-[9px]">
-                                                                            <span className={`rounded px-1.5 py-0.5 border ${localGpuStatus.nvidia_gpu_detected ? "border-emerald-400/40 text-emerald-300" : "border-destructive/40 text-destructive/90"}`}>
-                                                                                GPU: {localGpuStatus.nvidia_gpu_detected ? "yes" : "no"}
-                                                                            </span>
-                                                                            <span className={`rounded px-1.5 py-0.5 border ${localGpuStatus.cuda_toolkit_installed ? "border-emerald-400/40 text-emerald-300" : "border-amber-400/40 text-amber-300"}`}>
-                                                                                Toolkit: {localGpuStatus.cuda_toolkit_installed ? "yes" : "no"}
-                                                                            </span>
-                                                                            <span className={`rounded px-1.5 py-0.5 border ${localGpuStatus.cuda_backend_available ? "border-emerald-400/40 text-emerald-300" : "border-destructive/40 text-destructive/90"}`}>
-                                                                                Backend: {localGpuStatus.cuda_backend_available ? "yes" : "no"}
-                                                                            </span>
-                                                                        </div>
-                                                                    )}
-                                                                    {/* Actionable setup hints from the detector */}
-                                                                    {!!localGpuStatus?.hints?.length && (
-                                                                        <ul className="mt-2 space-y-1 list-disc pl-3.5">
-                                                                            {localGpuStatus.hints.map((hint, i) => (
-                                                                                <li key={hint.slice(0, 40) + i} className="text-[9px] leading-relaxed text-foreground/75">
-                                                                                    {hint}
-                                                                                </li>
-                                                                            ))}
-                                                                        </ul>
-                                                                    )}
-                                                                    <p className="mt-2 text-[9px] text-foreground/55">
-                                                                        After installing the CUDA Toolkit or changing environment variables, fully close and reopen the app — env vars are only read at launch.
-                                                                    </p>
-                                                                </div>
-                                                                <div className="px-3 py-2 flex items-center gap-2">
-                                                                    <button
-                                                                        type="button"
-                                                                        className="inline-flex items-center rounded-sm border border-sky-300/40 bg-sky-400/10 px-2 py-1 text-[10px] font-medium text-sky-200 transition-colors hover:bg-sky-400/20 hover:text-sky-100"
-                                                                        onClick={() =>
-                                                                            openExternalUrl("https://developer.nvidia.com/cuda-downloads").catch((err) =>
-                                                                                console.error("Failed to open CUDA link:", err)
-                                                                            )
-                                                                        }
-                                                                    >
-                                                                        Install CUDA Toolkit
-                                                                    </button>
-                                                                    <button
-                                                                        type="button"
-                                                                        className="inline-flex items-center rounded-sm border border-border bg-background/70 px-2 py-1 text-[10px] font-medium text-foreground/85 transition-colors hover:bg-background disabled:opacity-60"
-                                                                        onClick={() => refreshGpuStatus().catch(() => {})}
-                                                                        disabled={checkingGpuStatus}
-                                                                    >
-                                                                        {checkingGpuStatus ? "Checking..." : "Recheck detection"}
-                                                                    </button>
-                                                                </div>
-                                                            </TooltipContent>
-                                                        </Tooltip>
-                                                    )}
-                                                </div>
-                                                <Button
-                                                    size="xs"
-                                                    variant={settings.localPreferGpu ? "default" : "outline"}
-                                                    disabled={!localGpuStatus?.can_use_gpu}
-                                                    onClick={() =>
-                                                        onChange({
-                                                            ...settings,
-                                                            localPreferGpu: !settings.localPreferGpu,
-                                                        })
-                                                    }
-                                                >
-                                                    {settings.localPreferGpu ? "On" : "Off"}
-                                                </Button>
-                                            </div>
-                                        </div>
+                                        <SpeechModelSettings
+                                            preferGpu={!!settings.localPreferGpu}
+                                            onPreferGpuChange={(value) => onChange({ ...settings, localPreferGpu: value })}
+                                            glossary={settings.glossary ?? ""}
+                                            onGlossaryChange={(value) => onChange({ ...settings, glossary: value })}
+                                        />
                                     </div>
                                 )}
                             </div>
@@ -878,96 +696,11 @@ export default memo(function SettingsPanel({
                         </div>
                     </SectionCard>
 
-                    {/* Screenpipe URL (web mode only) */}
-                    {!isTauri() && (
-                        <SectionCard>
-                            <SectionLabel icon={Globe} label="Activity Monitor URL" />
-                            <Input
-                                placeholder="http://localhost:3030"
-                                className="text-xs"
-                                value={settings.screenpipeUrl}
-                                onChange={(e) =>
-                                    onChange({ ...settings, screenpipeUrl: e.target.value })
-                                }
-                            />
-                        </SectionCard>
-                    )}
                 </TabsContent>
 
                 <TabsContent value="providers" className="mt-4 space-y-5 overflow-y-auto min-h-0">
-                    {/* CLI Subscriptions (Claude Code / Codex / OpenCode) */}
-                    <SectionCard>
-                        <SectionLabel icon={Plug} label="CLI Subscriptions" />
-                        {cliSubsQuery.isLoading ? (
-                            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                                <CircleNotch weight="bold" className="size-3 animate-spin" />
-                                Detecting installed CLIs...
-                            </div>
-                        ) : cliDetected.length === 0 ? (
-                            <div className="space-y-1.5">
-                                <p className="text-[11px] text-muted-foreground/60">
-                                    No AI coding CLIs detected. Install and log in to reuse your
-                                    subscription here — no API key needed:
-                                </p>
-                                {CLI_SUBSCRIPTIONS.map((sub) => (
-                                    <p key={sub.id} className="text-[10px] text-muted-foreground/50 font-mono pl-2">
-                                        {sub.loginHint}
-                                    </p>
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="space-y-3">
-                                {CLI_SUBSCRIPTIONS.map((meta) => {
-                                    const status = cliSubsQuery.data?.find((s) => s.id === meta.id);
-                                    const usable = !!status?.detected && !!status?.loggedIn;
-                                    return (
-                                        <div key={meta.id} className="flex items-center justify-between gap-2">
-                                            <div className="flex items-center gap-1.5 min-w-0">
-                                                {usable ? (
-                                                    <CheckCircle weight="fill" className="size-3 text-emerald-400 shrink-0" />
-                                                ) : (
-                                                    <XCircle weight="fill" className="size-3 text-muted-foreground/40 shrink-0" />
-                                                )}
-                                                <div className="min-w-0">
-                                                    <span className={`text-[11px] font-medium block truncate ${usable ? "text-foreground/80" : "text-muted-foreground/60"}`}>
-                                                        {status?.name ?? meta.name}
-                                                    </span>
-                                                    <span className="text-[10px] text-muted-foreground/50 block truncate">
-                                                        {!status?.detected
-                                                            ? "Not installed"
-                                                            : !status?.loggedIn
-                                                                ? (status.hint || "Not logged in")
-                                                                : status.account || "Logged in"}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                            {usable && (
-                                                <Button
-                                                    size="xs"
-                                                    variant={(settings.cliSubscriptions?.[meta.id] ?? true) ? "default" : "outline"}
-                                                    onClick={() =>
-                                                        onChange({
-                                                            ...settings,
-                                                            cliSubscriptions: {
-                                                                ...settings.cliSubscriptions,
-                                                                [meta.id]: !(settings.cliSubscriptions?.[meta.id] ?? true),
-                                                            },
-                                                        })
-                                                    }
-                                                >
-                                                    {(settings.cliSubscriptions?.[meta.id] ?? true) ? "On" : "Off"}
-                                                </Button>
-                                            )}
-                                        </div>
-                                    );
-                                })}
-                                <p className="text-[10px] text-muted-foreground/50">
-                                    Detected subscriptions appear as model options. Credentials stay in each
-                                    tool&apos;s own config — prmptr never stores them.
-                                </p>
-                            </div>
-                        )}
-                    </SectionCard>
+                    {/* Your AI apps (OriginLM) */}
+                    <YourAiAppsCard active={activeTab === "providers"} />
 
                     {/* API Keys (cloud + Deepgram) */}
                     <SectionCard>

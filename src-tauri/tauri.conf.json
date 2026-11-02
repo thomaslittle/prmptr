@@ -1,13 +1,16 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/packages/api/schema/tauri-config.schema.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "PRMPTR",
   "identifier": "com.prmptr.app",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:43110",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../.next"
+    "frontendDist": "../out",
+    "windows": {
+      "staticVCRuntime": false
+    }
   },
   "app": {
     "withGlobalTauri": false,
@@ -24,19 +27,6 @@
         "minHeight": 500,
         "resizable": true,
         "fullscreen": false
-      },
-      {
-        "label": "overlay",
-        "title": "PRMPTR Overlay",
-        "url": "/overlay",
-        "width": 400,
-        "height": 500,
-        "resizable": true,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": true
       }
     ],
     "trayIcon": {
@@ -56,9 +46,9 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "models/ggml-tiny.en.bin": "models/ggml-tiny.en.bin",
-      "models/silero_vad.onnx": "models/silero_vad.onnx",
-      "models/nemo_en_speakerverification_speakernet.onnx": "models/nemo_en_speakerverification_speakernet.onnx"
+      "models/nemo_en_speakerverification_speakernet.onnx": "models/nemo_en_speakerverification_speakernet.onnx",
+      "../templates/*.toml": "templates/",
+      "models/silero-vad-v6.2-F32.gguf": "models/silero-vad-v6.2-F32.gguf"
     }
   },
   "plugins": {}

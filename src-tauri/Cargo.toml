@@ -1,6 +1,6 @@
 [package]
 name = "prmptr"
-version = "0.1.0"
+version = "0.2.0"
 description = "Real-time AI audio assistant with local transcription"
 license = "MIT"
 repository = "https://github.com/thomaslittle/prmptr"
@@ -14,37 +14,68 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-# NVIDIA CUDA GPU acceleration for whisper.cpp inference.
-# Requires: CUDA toolkit, CMake, MSVC/nvcc.
-# Enable with: cargo build --features cuda
+# Optional GPU backends for the transcribe.cpp speech engine. The default build
+# is CPU-only (Parakeet runs >15x realtime on a desktop CPU) and needs only
+# CMake + MSVC. `vulkan` covers NVIDIA/AMD/Intel and needs the Vulkan SDK;
+# `cuda` needs the CUDA toolkit.
 [features]
-cuda = ["whisper-rs/cuda"]
+vulkan = ["transcribe-cpp/vulkan"]
+cuda = ["transcribe-cpp/cuda"]
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"
-tauri-plugin-mcp-bridge = "0.2"
+tauri-plugin-mcp-bridge = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-reqwest = { version = "0.12", features = ["stream", "json", "native-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
+reqwest = { version = "0.13", features = ["stream", "json", "native-tls"] }
 futures-util = "0.3"
 log = "0.4"
 env_logger = "0.11"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-zip = "2"
-flate2 = "1"
-tar = "0.4"
-cpal = "0.15"
-whisper-rs = "0.15.1"
-whisper-rs-sys = "0.14.1"
+cpal = "0.18"
+transcribe-cpp = { version = "=0.4.1", default-features = false }
+sha2 = "0.10"
+rubato = "5"
+tauri-plugin-http = { version = "2", features = ["stream"] }
+# Local AI subscriptions (Claude Code, Codex, OpenCode, Ollama, LM Studio...) through the
+# installed clients, with explicit grants; credentials never leave those clients.
+# Pinned to a commit on originlm main (the crates.io alpha lags the repo).
+originlm-kit = { git = "https://github.com/thomaslittle/originlm", rev = "dabc10ea4f2f86c5b342dd4350caff0dac541ed0" }
+# Host-owned discovery, so PRMPTR can point the OpenCode adapter at the native
+# binary its npm shim wraps (see `local_ai::inventory_source`). Same revision.
+originlm-discovery = { git = "https://github.com/thomaslittle/originlm", rev = "dabc10ea4f2f86c5b342dd4350caff0dac541ed0" }
+originlm-platform = { git = "https://github.com/thomaslittle/originlm", rev = "dabc10ea4f2f86c5b342dd4350caff0dac541ed0" }
+# Native screen capture for "Include screenshot on Analyze".
+xcap = "0.9"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries", "tts"] }
 libc = "0.2"
 open = "5"
 url = "2"
-base64 = "0.22"
+base64 = "0.23"
+
+# Build scripts without debug assertions: sherpa-rs-sys otherwise links the
+# debug CRT (msvcrtd) into dev builds — a second C runtime in the process.
+[profile.dev.build-override]
+debug-assertions = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Transparent always-on-top overlay windows need Tauri's macOS private API
+# (paired with `macOSPrivateApi` in tauri.macos.conf.json). Direct-download
+# builds only; revisit before any Mac App Store submission.
+tauri = { version = "2", features = ["tray-icon"] }
+
+# transcribe.cpp 0.4.1 plus Parakeet vocabulary rescoring (the glossary), from
+# the fork anomalyco/hex ships. The crates.io 0.4.1 ignores vocabulary for
+# Parakeet. Drop this once a transcribe.cpp release includes it.
+[patch.crates-io]
+transcribe-cpp = { git = "https://github.com/anomalyco/transcribe.cpp", rev = "7045d1c0fe7cee37747b2792977421d435e75fca" }
+transcribe-cpp-sys = { git = "https://github.com/anomalyco/transcribe.cpp", rev = "7045d1c0fe7cee37747b2792977421d435e75fca" }
+

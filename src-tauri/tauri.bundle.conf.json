@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "resources": {
+      "models/silero-vad-v6.2-F32.gguf": "models/silero-vad-v6.2-F32.gguf",
+      "models/nemo_en_speakerverification_speakernet.onnx": "models/nemo_en_speakerverification_speakernet.onnx",
+      "../templates/*.toml": "templates/",
+      "runtime-dlls/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "runtime-dlls/sherpa-onnx-cxx-api.dll": "sherpa-onnx-cxx-api.dll",
+      "runtime-dlls/onnxruntime.dll": "onnxruntime.dll",
+      "runtime-dlls/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
+      "runtime-dlls/cargs.dll": "cargs.dll",
+      "runtime-dlls/vcruntime140.dll": "vcruntime140.dll",
+      "runtime-dlls/vcruntime140_1.dll": "vcruntime140_1.dll",
+      "runtime-dlls/msvcp140.dll": "msvcp140.dll"
+    }
+  }
+}

@@ -2,9 +2,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("Screenpipe error: {0}")]
-    Screenpipe(String),
-
     #[error("LLM error: {0}")]
     Llm(String),
 

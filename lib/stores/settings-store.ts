@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { AppSettings, LLMProvider, DEFAULT_SHORTCUTS } from "@/lib/types";
+import { migrateModelSelection } from "@/lib/model-migration";
 import {
     extractSecrets,
     hasAnySecret,
@@ -25,7 +26,6 @@ function normalizeTtsModel(model?: string): string {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-    screenpipeUrl: "http://localhost:3030",
     lmstudioUrl: "http://localhost:1234",
     voiceReplyEnabled: false,
     ttsProvider: "local-sherpa",
@@ -41,19 +41,21 @@ const DEFAULT_SETTINGS: AppSettings = {
     defaultModel: "lmstudio-auto",
     shortcuts: DEFAULT_SHORTCUTS,
     transcriptionMode: "local-whisper",
-    localSttEngine: "whisper",
     muteInput: false,
     muteOutput: false,
     includeScreenshotOnAnalyze: false,
     localPreferGpu: false,
-    // Detected CLI subscriptions are usable by default; users can opt out
-    // per provider from Settings → Providers.
-    cliSubscriptions: { "claude-cli": true, "codex-cli": true, "opencode-cli": true },
 };
 
 interface SettingsState {
     settings: AppSettings;
     setSettings: (settings: AppSettings) => void;
+    /**
+     * Merge a partial update into the *current* settings. Use this from async
+     * callbacks: spreading a `settings` captured earlier would overwrite
+     * anything hydrated since (e.g. API keys loaded from the secure store).
+     */
+    patchSettings: (patch: Partial<AppSettings>) => void;
     updateApiKey: (provider: string, key: string) => void;
     configuredProviders: () => LLMProvider[];
     /** Merge secrets loaded from the secure store into runtime settings. */
@@ -76,6 +78,12 @@ export const useSettingsStore = create<SettingsState>()(
             setSettings: (settings) => {
                 set({ settings });
                 const secrets = extractSecrets(settings);
+                if (hasAnySecret(secrets)) void saveSecrets(secrets);
+            },
+            patchSettings: (patch) => {
+                const next = { ...get().settings, ...patch };
+                set({ settings: next });
+                const secrets = extractSecrets(next);
                 if (hasAnySecret(secrets)) void saveSecrets(secrets);
             },
             applySecrets: (secrets) =>
@@ -113,12 +121,32 @@ export const useSettingsStore = create<SettingsState>()(
                 const persistedState = persisted as Partial<SettingsState> | undefined;
                 // Secrets are stripped from the persisted blob before merging.
                 const cleanSettings = stripSecrets(persistedState?.settings);
+                const migratedModel = migrateModelSelection(
+                    cleanSettings.defaultProvider ?? DEFAULT_SETTINGS.defaultProvider,
+                    cleanSettings.defaultModel ?? DEFAULT_SETTINGS.defaultModel
+                );
+                const legacy = cleanSettings as Omit<AppSettings, "transcriptionMode"> & {
+                    localSttEngine?: unknown;
+                    screenpipeUrl?: unknown;
+                    enableVision?: unknown;
+                    transcriptionMode?: string;
+                    cliSubscriptions?: unknown;
+                };
+                delete legacy.localSttEngine;
+                // Screenpipe capture was removed; fall back to on-device transcription.
+                delete legacy.screenpipeUrl;
+                delete legacy.enableVision;
+                if (legacy.transcriptionMode === "screenpipe") legacy.transcriptionMode = "local-whisper";
+                // CLI subscription opt-outs were replaced by Your AI apps (OriginLM).
+                delete legacy.cliSubscriptions;
                 return {
                     ...current,
                     ...persistedState,
                     settings: {
                         ...DEFAULT_SETTINGS,
                         ...cleanSettings,
+                        defaultProvider: migratedModel.provider,
+                        defaultModel: migratedModel.model,
                         ttsModel: normalizeTtsModel(persistedState?.settings?.ttsModel),
                         shortcuts: {
                             ...DEFAULT_SHORTCUTS,
@@ -143,13 +171,15 @@ if (typeof window !== "undefined") {
             const migrated = await migrateLegacyPersistedSecrets(
                 localStorage.getItem("prmptr-settings")
             );
+            if (migrated) {
+                // Re-read the blob first; applying secrets afterwards re-persists
+                // it without the migrated plaintext keys. (The reverse order
+                // let rehydrate() overwrite the keys we just migrated.)
+                await useSettingsStore.persist.rehydrate();
+            }
             const secrets = { ...(migrated ?? {}), ...((await loadSecrets()) ?? {}) };
             if (hasAnySecret(secrets)) {
                 useSettingsStore.getState().applySecrets(secrets);
-            }
-            if (migrated) {
-                // Re-persist the zustand blob without the migrated secrets.
-                useSettingsStore.persist.rehydrate();
             }
         } catch (err) {
             console.warn("[settings] secret hydration failed:", err);

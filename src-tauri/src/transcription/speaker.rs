@@ -1,59 +1,5 @@
 use sherpa_rs::embedding_manager::EmbeddingManager;
-use sherpa_rs::silero_vad::{SileroVad, SileroVadConfig, SpeechSegment};
 use sherpa_rs::speaker_id::{EmbeddingExtractor, ExtractorConfig, DEFAULT_SIMILARITY_THRESHOLD};
-
-/// Wraps Silero VAD for streaming speech detection.
-pub struct SpeechDetector {
-    vad: SileroVad,
-}
-
-impl SpeechDetector {
-    pub fn new(model_path: &str) -> Result<Self, String> {
-        let config = SileroVadConfig {
-            model: model_path.to_string(),
-            // Slightly below default so soft sentence onsets still trigger.
-            threshold: 0.45,
-            // Slightly shorter pause requirement so turns split faster.
-            min_silence_duration: 0.3,
-            min_speech_duration: 0.2,
-            // Cap long contiguous speech segments to reduce over-grouping.
-            max_speech_duration: 10.0,
-            sample_rate: 16000,
-            window_size: 512,
-            ..Default::default()
-        };
-        let vad = SileroVad::new(config, 30.0)
-            .map_err(|e| format!("Failed to create SileroVad: {e}"))?;
-        Ok(Self { vad })
-    }
-
-    /// Feed 16kHz mono audio samples to the VAD.
-    pub fn accept_waveform(&mut self, samples: &[f32]) {
-        self.vad.accept_waveform(samples.to_vec());
-    }
-
-    /// Whether the VAD currently detects speech.
-    pub fn is_speech(&mut self) -> bool {
-        self.vad.is_speech()
-    }
-
-    /// Whether a complete speech segment is available to pop.
-    pub fn has_segment(&mut self) -> bool {
-        !self.vad.is_empty()
-    }
-
-    /// Pop the next complete speech segment (audio + start offset).
-    pub fn pop_segment(&mut self) -> SpeechSegment {
-        let seg = self.vad.front();
-        self.vad.pop();
-        seg
-    }
-
-    /// Flush remaining audio on stop, producing a final segment if any speech buffered.
-    pub fn flush(&mut self) {
-        self.vad.flush();
-    }
-}
 
 /// Result of speaker identification for a speech segment.
 pub struct SpeakerResult {
