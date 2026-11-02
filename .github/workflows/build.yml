@@ -62,6 +62,12 @@ jobs:
             libasound2-dev libudev-dev pkg-config cmake libpipewire-0.3-dev libxdo-dev libgbm-dev libdbus-1-dev \
             libfuse2t64
       - run: npm ci
+      - name: Refresh the sherpa-rs runtime download
+        # rust-cache restores the compiled sherpa-rs-sys output but not its
+        # downloaded runtime directory, so the cached build script never
+        # re-fetches cargs.lib and the test link fails. Force a rebuild.
+        working-directory: src-tauri
+        run: cargo clean -p sherpa-rs-sys
       - name: Rust unit tests
         working-directory: src-tauri
         run: cargo test --lib
