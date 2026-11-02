@@ -1,6 +1,6 @@
 {
   "name": "prmptr",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 43110",
@@ -16,7 +16,7 @@
     "test:rust": "cd src-tauri && cargo test --lib",
     "test:all": "npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e && npm run test:rust",
     "tauri:dev:cuda": "tauri dev --features cuda",
-    "tauri:build": "node scripts/stage-native-dlls.mjs && tauri build --config src-tauri/tauri.bundle.conf.json"
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

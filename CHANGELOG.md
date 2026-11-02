@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.1 — 2026-11-02
+
+### Linux packages
+
+- **Fixed the RPM/DEB failing to start** (`libsherpa-onnx-c-api.so: cannot open
+  shared object file`). The Linux packages never included sherpa-onnx's shared
+  libraries, and the binary had no path to them. `scripts/stage-native-libs.mjs`
+  now stages `libsherpa-onnx-c-api.so`, `libsherpa-onnx-cxx-api.so` and
+  `libonnxruntime.so`; `tauri.linux.conf.json` packages them under
+  `/usr/lib/PRMPTR`; and the Linux RUNPATH (`$ORIGIN/../lib/PRMPTR`) lets the
+  executable find them without `LD_LIBRARY_PATH` or `ldconfig`.
+- The Windows runtime staging moved to the same cross-platform script and
+  `tauri.windows.conf.json`; the release build no longer needs a separate
+  bundle config.
+- CI now extracts the built `.deb` and fails if `ldd` reports a missing
+  library, and checks that the `.rpm` ships the sherpa libraries.
+
 ## 0.2.0 — 2026-11-02
 
 The first release with the complete desktop app: on-device transcription, the

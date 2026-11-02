@@ -90,6 +90,20 @@ jobs:
           # AppImage bundling needs FUSE/linuxdeploy, which GitHub's
           # containers do not provide reliably; ship .deb and .rpm instead.
           args: --bundles ${{ runner.os == 'Windows' && 'nsis,msi' || 'deb,rpm' }}
+      - name: Verify Linux package runtime libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg=$(mktemp -d)
+          dpkg-deb -x src-tauri/target/release/bundle/deb/*.deb "$pkg"
+          missing=$(ldd "$pkg/usr/bin/prmptr" | grep "not found" || true)
+          if [ -n "$missing" ]; then
+            echo "$missing" >&2
+            exit 1
+          fi
+          rpm -qpl src-tauri/target/release/bundle/rpm/*.rpm | grep -q "libsherpa-onnx-c-api.so"
+          echo "Linux packages resolve libsherpa-onnx-c-api.so"
       - name: Attach installers to the release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -107,6 +121,8 @@ jobs:
             echo "No bundles were produced" >&2
             exit 1
           fi
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --title "PRMPTR ${GITHUB_REF_NAME}" --generate-notes
           gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
       - uses: actions/upload-artifact@v4
         with:

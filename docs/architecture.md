@@ -126,14 +126,22 @@ from `feature/greenfield-speech-core`.
 - Strict CSP; `withGlobalTauri: false`; `open_external_url` allows http(s)
   only; model downloads are size- and hash-checked.
 
-## Windows runtime
+## Native runtime libraries
 
 One C runtime per process: the dynamic release CRT (`/MD`), matching the
 prebuilt sherpa-onnx / ONNX Runtime DLLs. `.cargo/config.toml` pins CMake
 builds (transcribe.cpp) to it and dev build scripts don't inject the debug CRT.
-`npm run tauri:build` stages the sherpa/ONNX DLLs and the VC++ runtime DLLs
-app-local (`scripts/stage-native-dlls.mjs`, `tauri.bundle.conf.json`) so the
-installed app starts on a clean PC.
+`beforeBuildCommand` runs `scripts/stage-native-libs.mjs`, which stages the
+sherpa/ONNX runtime for the host:
+
+- Windows: the DLLs and the VC++ runtime, app-local next to `prmptr.exe`
+  (`runtime-dlls/`, bundled by `tauri.windows.conf.json`).
+- Linux: the shared libraries, packaged at `/usr/lib/PRMPTR`
+  (`tauri.linux.conf.json`) and found through the executable RUNPATH
+  `$ORIGIN/../lib/PRMPTR` set in `.cargo/config.toml`.
+
+This is why the RPM/DEB start on a clean machine without a separate sherpa or
+ONNX Runtime install.
 
 ## Verification
 
