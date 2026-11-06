@@ -9,18 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "ahash"
-version = "0.8.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
-dependencies = [
- "cfg-if",
- "once_cell",
- "version_check",
- "zerocopy",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2200,15 +2188,6 @@ checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 
 [[package]]
 name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-dependencies = [
- "ahash",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
@@ -2224,11 +2203,11 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "hashlink"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
+checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
 dependencies = [
- "hashbrown 0.14.5",
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -3065,9 +3044,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.30.1"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
+checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
 dependencies = [
  "cc",
  "pkg-config",
@@ -4096,8 +4075,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-adapters"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "chrono",
  "getrandom 0.4.1",
@@ -4119,8 +4098,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-chatgpt-auth"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -4142,8 +4121,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-contracts"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -4156,8 +4135,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-core"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "originlm-contracts",
  "serde",
@@ -4166,19 +4145,20 @@ dependencies = [
 
 [[package]]
 name = "originlm-discovery"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "originlm-contracts",
  "originlm-platform",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
 ]
 
 [[package]]
 name = "originlm-kit"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "originlm-adapters",
  "originlm-chatgpt-auth",
@@ -4186,6 +4166,7 @@ dependencies = [
  "originlm-core",
  "originlm-discovery",
  "originlm-platform",
+ "originlm-runtime",
  "originlm-service",
  "serde",
  "serde_json",
@@ -4195,8 +4176,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-platform"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "file-id",
  "libc",
@@ -4206,8 +4187,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-runtime"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "base64 0.23.1",
  "originlm-contracts",
@@ -4218,8 +4199,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-service"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -4239,8 +4220,8 @@ dependencies = [
 
 [[package]]
 name = "originlm-store"
-version = "0.1.0-alpha.23"
-source = "git+https://github.com/thomaslittle/originlm?rev=dabc10ea4f2f86c5b342dd4350caff0dac541ed0#dabc10ea4f2f86c5b342dd4350caff0dac541ed0"
+version = "0.1.0-alpha.25"
+source = "git+https://github.com/thomaslittle/originlm?rev=204b59d4b70be224cd969425060669efea48ac05#204b59d4b70be224cd969425060669efea48ac05"
 dependencies = [
  "getrandom 0.4.1",
  "originlm-contracts",
@@ -5058,9 +5039,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.32.1"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
+checksum = "165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
@@ -7438,7 +7419,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

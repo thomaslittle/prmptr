@@ -330,7 +330,12 @@ export type LocalAiEvent = { type: "delta"; text: string } | { type: "status"; m
 
 export interface LocalAiCompleteParams {
     selection: { routeId: string; modelId: string; revision: string };
+    /** The user's message for this turn only (not the system prompt). */
     prompt: string;
+    /** OriginLM conversation transcript the turn belongs to. */
+    conversationId?: string | null;
+    /** App system/personality prompt, stored with the conversation. */
+    instructions?: string | null;
     requestId: string;
     imageDataUrl?: string | null;
 }
@@ -364,6 +369,8 @@ export async function localAiComplete(
         prompt: params.prompt,
         requestId: params.requestId,
         imageDataUrl: params.imageDataUrl ?? null,
+        conversationId: params.conversationId ?? null,
+        instructions: params.instructions ?? null,
     });
 }
 

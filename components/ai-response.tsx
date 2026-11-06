@@ -319,7 +319,7 @@ export default function AiResponse({
     devices,
 }: AiResponseProps) {
     const { settings } = useSettingsStore();
-    const { responses, addResponse, clearResponses } = useSessionStore();
+    const { responses, addResponse, clearResponses, currentSessionId } = useSessionStore();
     const mounted = useSyncExternalStore(
         subscribeNoop,
         () => true,
@@ -404,6 +404,19 @@ export default function AiResponse({
         onResponseCompleteRef.current = onResponseComplete;
     }, [onResponseComplete]);
 
+    // OriginLM's canonical transcript is keyed by the PRMPTR session. Before a
+    // session row exists (the first completion creates it), a per-mount draft
+    // id keeps consecutive turns in one conversation instead of starting over.
+    const [draftConversationId] = useState(() =>
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? `prmptr-${crypto.randomUUID()}`
+            : `prmptr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    );
+    const conversationIdRef = useRef(currentSessionId ?? draftConversationId);
+    useEffect(() => {
+        conversationIdRef.current = currentSessionId ?? draftConversationId;
+    }, [currentSessionId, draftConversationId]);
+
     /** Get the LLM request base fields (apiKey, baseUrl, model, provider) */
     const getLLMConfig = useCallback(() => {
         const config = sessionConfigRef.current;
@@ -424,6 +437,7 @@ export default function AiResponse({
             apiKey: apiKey || "",
             baseUrl: isLmStudio ? lmBaseUrl : undefined,
             ...(config.provider === "local-ai" && config.localAi ? { localAi: config.localAi } : {}),
+            ...(config.provider === "local-ai" ? { conversationId: conversationIdRef.current } : {}),
         };
     }, []);
 

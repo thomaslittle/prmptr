@@ -41,22 +41,30 @@ describe("local-ai provider", () => {
         expect(providerNeedsApiKey("local-ai")).toBe(false);
     });
 
-    it("sends one combined prompt with the route selection and streams accumulated deltas", async () => {
+    it("sends the user message as the prompt, the system prompt as instructions, and streams accumulated deltas", async () => {
         tauri.localAiComplete.mockImplementation(async (_params, onDelta) => {
             onDelta("Hello");
             onDelta(", world");
             return "Hello, world";
         });
         const tokens: string[] = [];
-        const text = await streamCompletionOnce(call(), (t) => tokens.push(t));
+        const text = await streamCompletionOnce(call({ conversationId: "session-123" }), (t) => tokens.push(t));
 
         expect(text).toBe("Hello, world");
         expect(tokens).toEqual(["Hello", "Hello, world"]);
         const [params] = tauri.localAiComplete.mock.calls[0];
         expect(params.selection).toEqual({ routeId: "r-claude", modelId: "m-haiku", revision: "1" });
-        expect(params.prompt).toBe("You are a copilot.\n\n---\n\nWhat should I say?");
+        expect(params.prompt).toBe("What should I say?");
+        expect(params.instructions).toBe("You are a copilot.");
+        expect(params.conversationId).toBe("session-123");
         expect(params.requestId).toMatch(/\S/);
         expect(params.imageDataUrl).toBeNull();
+    });
+
+    it("passes no conversation id when the caller has no session yet", async () => {
+        tauri.localAiComplete.mockResolvedValue("ok");
+        await streamCompletionOnce(call(), () => {});
+        expect(tauri.localAiComplete.mock.calls[0][0].conversationId).toBeNull();
     });
 
     it("uses a fresh request id per call", async () => {

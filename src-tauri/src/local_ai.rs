@@ -10,7 +10,10 @@
 //! The renderer gets three narrow commands — list models, complete, cancel —
 //! and never supplies grants, paths, executables or raw OriginLM methods.
 //! Everything is inert until the user first opens the model picker; each
-//! completion runs in a fresh read-only session with native tools disabled.
+//! completion runs read-only with native tools disabled. An idle session is
+//! kept per PRMPTR conversation and reused for the next turn, so a native
+//! client keeps its history and a model switch can carry OriginLM's canonical
+//! transcript instead of starting over.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -42,6 +45,31 @@ const WORKSPACE_ID: &str = "prmptr";
 /// Native clients can take a while to boot; a stuck turn must still end.
 const TURN_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The OriginLM session kept for a conversation's next turn.
+///
+/// PRMPTR reuses an idle session instead of creating and closing one per
+/// completion, so a native client keeps its own history and HTTP providers
+/// keep their message array. `after` is the journal cursor already delivered to
+/// the UI: the next turn polls from there so replayed text never leaks.
+#[derive(Clone)]
+struct HeldSession {
+    session_id: String,
+    route_id: String,
+    model_id: String,
+    revision: String,
+    instructions: Option<String>,
+    after: Option<String>,
+    busy: bool,
+}
+
+impl HeldSession {
+    fn matches(&self, selection: &LocalAiSelection) -> bool {
+        self.route_id == selection.route_id
+            && self.model_id == selection.model_id
+            && self.revision == selection.revision
+    }
+}
+
 struct Inner {
     _kit: Kit,
     client: EmbeddedClient,
@@ -49,6 +77,8 @@ struct Inner {
     granted: BTreeSet<String>,
     /// requestId → (sessionId, turnId) for cancellation.
     running: HashMap<String, (String, Option<String>)>,
+    /// conversationId → the session reused for that conversation's next turn.
+    conversations: HashMap<String, HeldSession>,
 }
 
 #[derive(Default)]
@@ -87,6 +117,51 @@ pub enum LocalAiEvent {
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+/// A stable host conversation id for OriginLM's canonical transcript.
+///
+/// The renderer passes the PRMPTR session id (`session-<millis>-<random>`),
+/// which already matches OriginLM's allowed alphabet and length. A missing id
+/// still gets a valid one so a turn never fails just because no session row
+/// exists yet.
+fn stable_conversation_id(provided: Option<String>) -> String {
+    provided
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| format!("prmptr-{}", uuid::Uuid::new_v4()))
+}
+
+/// The app system/personality prompt: trimmed, with an empty prompt omitted so
+/// OriginLM does not store an empty instruction block.
+fn normalize_instructions(instructions: Option<String>) -> Option<String> {
+    instructions
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+async fn create_session(
+    client: &EmbeddedClient,
+    selection: &Selection,
+    conversation_id: &str,
+    instructions: Option<&str>,
+) -> Result<Value, String> {
+    let mut params = json!({
+        "selection": selection,
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": conversation_id,
+    });
+    if let Some(instructions) = instructions {
+        params["instructions"] = json!(instructions);
+    }
+    client.request("sessions.create", params).await.map_err(err)
+}
+
+fn session_id_of(session: &Value) -> Result<String, String> {
+    session["id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "OriginLM returned no session id".to_string())
 }
 
 fn capability_supported(caps: &Value, id: &str) -> bool {
@@ -250,6 +325,7 @@ impl LocalAi {
                 workspace,
                 granted: BTreeSet::new(),
                 running: HashMap::new(),
+                conversations: HashMap::new(),
             });
         }
         Ok(guard)
@@ -283,20 +359,23 @@ pub async fn local_ai_complete(
     prompt: String,
     request_id: String,
     image_data_url: Option<String>,
+    conversation_id: Option<String>,
+    instructions: Option<String>,
 ) -> Result<String, String> {
     if prompt.trim().is_empty() {
         return Err("Empty prompt".into());
     }
+    let wanted = selection;
     let selection = Selection {
-        route_id: selection.route_id,
-        model_id: selection.model_id,
-        revision: selection.revision,
+        route_id: wanted.route_id.clone(),
+        model_id: wanted.model_id.clone(),
+        revision: wanted.revision.clone(),
         options: BTreeMap::new(),
     };
 
     // Setup under the lock; the long-running turn polls without holding it
     // so cancellation and other requests stay responsive.
-    let session_id = {
+    let (session_id, conversation, mut cursor) = {
         let mut guard = state.ensure(&app).await?;
         let inner = guard.as_mut().expect("initialized");
         inner
@@ -324,12 +403,82 @@ pub async fn local_ai_complete(
                 })
                 .map_err(err)?;
         }
-        let session: Value = inner
-            .client
-            .request("sessions.create", json!({ "selection": selection, "workspaceId": WORKSPACE_ID }))
-            .await
-            .map_err(err)?;
-        let session_id = session["id"].as_str().ok_or("OriginLM returned no session id")?.to_string();
+
+        // The renderer supplies a stable id per PRMPTR session. OriginLM shares
+        // its canonical transcript between sessions created with the same id.
+        let conversation = stable_conversation_id(conversation_id);
+        let instructions = normalize_instructions(instructions);
+        let existing = inner.conversations.get(&conversation).cloned();
+
+        let (session_id, after) = match existing {
+            // A turn is still running for this conversation. Never close it
+            // out from under the running request; a fresh session in the same
+            // conversation is seeded from the canonical transcript instead.
+            Some(held) if held.busy => {
+                let session = create_session(&inner.client, &selection, &conversation, instructions.as_deref()).await?;
+                (session_id_of(&session)?, None)
+            }
+            // Model or provider changed: switchModel carries the canonical
+            // transcript to the new model. If it cannot (busy/unsupported),
+            // every provider session is closed and a fresh one is opened in
+            // the same conversation, which OriginLM seeds from the transcript.
+            Some(held) if !held.matches(&wanted) => {
+                match inner
+                    .client
+                    .request::<Value>(
+                        "sessions.switchModel",
+                        json!({
+                            "sessionId": held.session_id,
+                            "selection": selection,
+                            "instructions": instructions,
+                        }),
+                    )
+                    .await
+                {
+                    Ok(session) => (session_id_of(&session)?, None),
+                    Err(e) => {
+                        log::info!("[local-ai] switchModel failed, reseeding a fresh session: {e}");
+                        let _ = inner
+                            .client
+                            .request::<Value>("sessions.close", json!({ "sessionId": held.session_id }))
+                            .await;
+                        let session =
+                            create_session(&inner.client, &selection, &conversation, instructions.as_deref()).await?;
+                        (session_id_of(&session)?, None)
+                    }
+                }
+            }
+            // New instructions on the same model must apply now: a fresh
+            // session in the same conversation is seeded from the transcript.
+            Some(held) if held.instructions != instructions => {
+                let _ = inner
+                    .client
+                    .request::<Value>("sessions.close", json!({ "sessionId": held.session_id }))
+                    .await;
+                let session = create_session(&inner.client, &selection, &conversation, instructions.as_deref()).await?;
+                (session_id_of(&session)?, None)
+            }
+            // Reuse the idle session and continue after the last journal
+            // cursor so earlier text is never replayed into the UI.
+            Some(held) => (held.session_id, held.after),
+            None => {
+                let session = create_session(&inner.client, &selection, &conversation, instructions.as_deref()).await?;
+                (session_id_of(&session)?, None)
+            }
+        };
+
+        inner.conversations.insert(
+            conversation.clone(),
+            HeldSession {
+                session_id: session_id.clone(),
+                route_id: wanted.route_id,
+                model_id: wanted.model_id,
+                revision: wanted.revision,
+                instructions,
+                after: after.clone(),
+                busy: true,
+            },
+        );
         inner.running.insert(request_id.clone(), (session_id.clone(), None));
 
         let mut start = json!({ "sessionId": session_id, "prompt": prompt, "requestId": request_id });
@@ -350,31 +499,51 @@ pub async fn local_ai_complete(
             Err(e) => {
                 let _ = inner.client.request::<Value>("sessions.close", json!({ "sessionId": session_id })).await;
                 inner.running.remove(&request_id);
+                if inner.conversations.get(&conversation).is_some_and(|h| h.session_id == session_id) {
+                    inner.conversations.remove(&conversation);
+                }
                 return Err(err(e));
             }
         };
         if let Some(entry) = inner.running.get_mut(&request_id) {
             entry.1 = turn["turnId"].as_str().map(str::to_string);
         }
-        session_id
+        (session_id, conversation, after)
     };
 
-    let result = pump_events(&state, &session_id, &on_event).await;
+    let result = pump_events(&state, &session_id, &mut cursor, &on_event).await;
 
-    let guard = state.inner.lock().await;
-    if let Some(inner) = guard.as_ref() {
-        let _ = inner.client.request::<Value>("sessions.close", json!({ "sessionId": session_id })).await;
-    }
-    drop(guard);
-    if let Some(inner) = state.inner.lock().await.as_mut() {
+    let mut guard = state.inner.lock().await;
+    if let Some(inner) = guard.as_mut() {
+        let is_held = inner
+            .conversations
+            .get(&conversation)
+            .is_some_and(|held| held.session_id == session_id);
+        if result.is_ok() && is_held {
+            // The session stays open for this conversation's next turn.
+            if let Some(held) = inner.conversations.get_mut(&conversation) {
+                held.busy = false;
+                held.after = cursor;
+            }
+        } else {
+            let _ = inner.client.request::<Value>("sessions.close", json!({ "sessionId": session_id })).await;
+            if is_held {
+                inner.conversations.remove(&conversation);
+            }
+        }
         inner.running.remove(&request_id);
     }
+    drop(guard);
     result
 }
 
-async fn pump_events(state: &LocalAi, session_id: &str, on_event: &Channel<LocalAiEvent>) -> Result<String, String> {
+async fn pump_events(
+    state: &LocalAi,
+    session_id: &str,
+    after: &mut Option<String>,
+    on_event: &Channel<LocalAiEvent>,
+) -> Result<String, String> {
     let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
-    let mut after: Option<String> = None;
     let mut text = String::new();
     loop {
         if tokio::time::Instant::now() > deadline {
@@ -384,14 +553,14 @@ async fn pump_events(state: &LocalAi, session_id: &str, on_event: &Channel<Local
             let guard = state.inner.lock().await;
             let inner = guard.as_ref().ok_or("Local AI shut down")?;
             let mut params = json!({ "sessionId": session_id });
-            if let Some(a) = &after {
+            if let Some(a) = after.as_ref() {
                 params["after"] = json!(a);
             }
             inner.client.request("events.read", params).await.map_err(err)?
         };
         for event in page["events"].as_array().cloned().unwrap_or_default() {
             if let Some(seq) = event["sequence"].as_str() {
-                after = Some(seq.to_string());
+                *after = Some(seq.to_string());
             }
             let payload = &event["payload"];
             match payload["type"].as_str() {
@@ -449,6 +618,54 @@ pub fn shutdown(state: &LocalAi) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_the_prmptr_session_as_the_conversation_id() {
+        assert_eq!(stable_conversation_id(Some("session-1750000000000-abc123".into())), "session-1750000000000-abc123");
+        assert_eq!(stable_conversation_id(Some("  session-trimmed  ".into())), "session-trimmed");
+    }
+
+    #[test]
+    fn generates_a_valid_conversation_id_when_none_is_supplied() {
+        let generated = stable_conversation_id(None);
+        assert!(generated.starts_with("prmptr-"), "unexpected id: {generated}");
+        assert!(!generated.contains(char::is_whitespace));
+        assert!(!generated.contains(char::is_uppercase));
+        assert!(generated.len() <= 128);
+        assert_ne!(generated, stable_conversation_id(None), "each missing id starts a separate conversation");
+        assert!(stable_conversation_id(Some("   ".into())).starts_with("prmptr-"));
+    }
+
+    #[test]
+    fn trims_instructions_and_omits_empty_ones() {
+        assert_eq!(
+            normalize_instructions(Some("  You are a concise copilot.\n".into())),
+            Some("You are a concise copilot.".to_string())
+        );
+        assert_eq!(normalize_instructions(Some(" \n\t ".into())), None);
+        assert_eq!(normalize_instructions(None), None);
+    }
+
+    #[test]
+    fn recognises_a_changed_selection_for_the_same_conversation() {
+        let held = HeldSession {
+            session_id: "session-1".into(),
+            route_id: "route-1".into(),
+            model_id: "model-a".into(),
+            revision: "1".into(),
+            instructions: None,
+            after: None,
+            busy: false,
+        };
+        let same = LocalAiSelection { route_id: "route-1".into(), model_id: "model-a".into(), revision: "1".into() };
+        let other_model =
+            LocalAiSelection { route_id: "route-1".into(), model_id: "model-b".into(), revision: "1".into() };
+        let other_route =
+            LocalAiSelection { route_id: "route-2".into(), model_id: "model-a".into(), revision: "1".into() };
+        assert!(held.matches(&same));
+        assert!(!held.matches(&other_model));
+        assert!(!held.matches(&other_route));
+    }
 
     #[test]
     fn flattens_snapshot_into_picker_rows() {

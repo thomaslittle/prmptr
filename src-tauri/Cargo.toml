@@ -47,11 +47,11 @@ tauri-plugin-http = { version = "2", features = ["stream"] }
 # Local AI subscriptions (Claude Code, Codex, OpenCode, Ollama, LM Studio...) through the
 # installed clients, with explicit grants; credentials never leave those clients.
 # Pinned to a commit on originlm main (the crates.io alpha lags the repo).
-originlm-kit = { git = "https://github.com/thomaslittle/originlm", rev = "dabc10ea4f2f86c5b342dd4350caff0dac541ed0" }
+originlm-kit = { git = "https://github.com/thomaslittle/originlm", rev = "204b59d4b70be224cd969425060669efea48ac05" }
 # Host-owned discovery, so PRMPTR can point the OpenCode adapter at the native
 # binary its npm shim wraps (see `local_ai::inventory_source`). Same revision.
-originlm-discovery = { git = "https://github.com/thomaslittle/originlm", rev = "dabc10ea4f2f86c5b342dd4350caff0dac541ed0" }
-originlm-platform = { git = "https://github.com/thomaslittle/originlm", rev = "dabc10ea4f2f86c5b342dd4350caff0dac541ed0" }
+originlm-discovery = { git = "https://github.com/thomaslittle/originlm", rev = "204b59d4b70be224cd969425060669efea48ac05" }
+originlm-platform = { git = "https://github.com/thomaslittle/originlm", rev = "204b59d4b70be224cd969425060669efea48ac05" }
 # Native screen capture for "Include screenshot on Analyze".
 xcap = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

@@ -23,6 +23,12 @@ export interface LlmCall {
     baseUrl?: string;
     /** Required for provider "local-ai" (`model` is the OriginLM model id). */
     localAi?: LocalAiRoute;
+    /**
+     * Stable host conversation id for OriginLM's canonical transcript. The
+     * renderer passes the current PRMPTR session id so a model switch can
+     * carry the prior conversation.
+     */
+    conversationId?: string;
     imageDataUrl?: string;
     maxTokens?: number;
     temperature?: number;
@@ -133,12 +139,9 @@ async function streamLocalAi(
     }
     if (signal?.aborted) throw abortError();
 
-    // OriginLM turns take a single prompt, so the system prompt leads it.
-    const prompt = `${call.systemPrompt}
-
----
-
-${call.userMessage}`;
+    // OriginLM keeps app instructions with the conversation, so they are sent
+    // once on session creation and reused across turns instead of being
+    // pasted into every prompt. The turn prompt is the user message alone.
     const requestId = newLocalAiRequestId();
     let fullText = "";
     let settled = false;
@@ -155,7 +158,9 @@ ${call.userMessage}`;
         localAiComplete(
             {
                 selection: { routeId: route.routeId, modelId: call.model, revision: route.revision },
-                prompt,
+                prompt: call.userMessage,
+                instructions: call.systemPrompt,
+                conversationId: call.conversationId ?? null,
                 requestId,
                 imageDataUrl: route.supportsImageInput === true && call.imageDataUrl ? call.imageDataUrl : null,
             },
